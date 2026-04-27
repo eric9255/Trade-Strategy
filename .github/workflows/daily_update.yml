@@ -30,8 +30,15 @@ jobs:
     # (如果你的 Python 腳本有用到 API Key，可以在這裡透過 GitHub Secrets 傳入)
     - name: Run Python script
       env:
-        OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }} 
+        GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }} 
       run: python generate_report.py
+
+    # 5. 將新的 index.html 推送覆蓋回 GitHub
+    - name: Commit and push changes
+      uses: stefanzweifel/git-auto-commit-action@v4
+      with:
+        commit_message: "Auto-update daily stock report with AI"
+        file_pattern: index.html
 
     # 5. 將新的 index.html 推送覆蓋回 GitHub
     - name: Commit and push changes
