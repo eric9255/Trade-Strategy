@@ -25,7 +25,7 @@ if api_key:
     try:
         genai.configure(api_key=api_key)
         # 使用 gemini-1.5-flash 模型，速度快且免費額度高
-        model = genai.GenerativeModel('gemini-1.5-flash') 
+        model = genai.GenerativeModel('gemini-pro') 
         
         # 這是給 AI 的指令 (Prompt)
         prompt = f"""
