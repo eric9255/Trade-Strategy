@@ -34,18 +34,16 @@ header {visibility: hidden;}
 st.markdown(custom_css, unsafe_allow_html=True)
 
 # ==========================================
-# 2. 側邊欄 (大盤秒切換 + 持股表單防呆)
+# 2. 側邊欄 (大盤秒切換 + 持股表單)
 # ==========================================
 st.sidebar.markdown("<h3 style='color:#c9a84c; font-family: Noto Serif TC;'>🌍 全球投資組合設定</h3>", unsafe_allow_html=True)
 
-# 【關鍵修改】大盤選項放在表單「外面」，點擊瞬間切換！
 market_choice = st.sidebar.radio(
     "📊 選擇大盤分析基準",["台股加權指數 (^TWII)", "美股標普 500 (^GSPC)", "美股納斯達克 (^IXIC)"]
 )
 
 st.sidebar.write("---")
 
-# 【關鍵修改】持股輸入框放在表單「裡面」，打字才不會當機！
 with st.sidebar.form("setting_form"):
     st.write("💡 **持股輸入提示：**\n- 台股請加後綴 (如: `2330.TW`)\n- 美股直接輸入 (如: `NVDA`, `AAPL`)")
     user_input = st.text_area("請輸入持股代號 (用逗號分隔)", "2330.TW, NVDA, AAPL, 2603.TW")
@@ -79,33 +77,35 @@ def get_ai_report(market_name, c, m5, m20, rsi, p_info):
     if not api_key: return "<p style='color:#e8a24a;'>⚠️ 系統尚未設定 GEMINI_API_KEY。</p>"
     try:
         genai.configure(api_key=api_key)
+        # 【修改提示詞】取消所有範例的縮排，告訴 AI 絕對不要縮排
         prompt = f"""
         你是擁有 20 年經驗的華爾街頂級量化分析師。
         今日大盤基準為【{market_name}】，客觀數據：收盤 {c:.2f}，5MA {m5:.2f}，20MA {m20:.2f}，RSI {rsi:.1f}。
         我的持股組合如下 (包含台美股): 
         {p_info}
 
-        請提供深度分析報告。你**必須完全使用以下 HTML 結構與 Class 進行排版**（請直接輸出純 HTML，不要包含 ```html 標記）：
+        請提供深度分析報告。你**必須完全使用以下 HTML 結構與 Class 進行排版**。
+        ⚠️ 嚴格規定：請直接輸出純 HTML，絕對「不要」包含 ```html 標記，也絕對「不要」在每一行開頭加上空白縮排！
 
         <div class="theory-block">
-            <div class="theory-block-title">▸ 【{market_name}】解析 (波浪與纏論視角)</div>
-            <div class="theory-text">
-                (你的大盤分析內容，重點文字請使用 <strong> 標籤包裝)
-            </div>
+        <div class="theory-block-title">▸ 【{market_name}】解析 (波浪與纏論視角)</div>
+        <div class="theory-text">
+        (你的大盤分析內容，重點文字請使用 <strong> 標籤包裝)
+        </div>
         </div>
 
         <div class="theory-block">
-            <div class="theory-block-title">▸ 明早走勢推演與實戰策略</div>
-            <div class="theory-text">
-                (你的策略推演，若有看空/危險的文字請加上 <span style="color:#e05c5c">，看多請加上 <span style="color:#4caf82">)
-            </div>
+        <div class="theory-block-title">▸ 明早走勢推演與實戰策略</div>
+        <div class="theory-text">
+        (你的策略推演，若有看空/危險的文字請加上 <span style="color:#e05c5c">，看多請加上 <span style="color:#4caf82">)
+        </div>
         </div>
 
         <div class="theory-block">
-            <div class="theory-block-title">▸ 💼 全球專屬持股診斷</div>
-            <div class="theory-text">
-                (針對我提供的每一檔個股，依據均線位階，逐一給出明確的技術面點評與防守建議，請使用 <ul> <li> 排版)
-            </div>
+        <div class="theory-block-title">▸ 💼 全球專屬持股診斷</div>
+        <div class="theory-text">
+        (針對我提供的每一檔個股，依據均線位階，逐一給出明確的技術面點評與防守建議，請使用 <ul> <li> 排版)
+        </div>
         </div>
         """
         target_model = 'gemini-1.5-flash'
@@ -115,7 +115,12 @@ def get_ai_report(market_name, c, m5, m20, rsi, p_info):
                 break
         model = genai.GenerativeModel(target_model)
         response = model.generate_content(prompt)
-        return response.text.replace("```html", "").replace("```", "")
+        
+        # 【終極防護】把每一行前面的空白強制刪除，阻止 Markdown 變成程式碼區塊
+        raw_text = response.text.replace("```html", "").replace("```", "")
+        clean_text = "\n".join([line.strip() for line in raw_text.split('\n')])
+        
+        return clean_text
     except Exception as e:
         return f"<p style='color:#e05c5c;'>🤖 API 錯誤：{e}</p>"
 
