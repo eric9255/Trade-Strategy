@@ -2,4 +2,4 @@ yfinance
 pandas
 pandas_ta
 plotly
-openai
+google-generativeai
