@@ -168,5 +168,10 @@ with st.spinner('📡 讀取市場數據與 AI 演算中...'):
                 """, unsafe_allow_html=True)
 
         # 5. 渲染 AI 報告
+       # 5. 渲染 AI 報告
         ai_html = get_ai_report(c, m5, m20, rsi, port_info)
-        st.markdown("<h4 style='color:#c9a84c; font-family:Noto Serif TC; margin-top:30px;'>03. AI 深度技術分析 (波浪/纏論/葛蘭威爾)</h4>", unsafe_allow_html=
+        st.markdown("<h4 style='color:#c9a84c; font-family:Noto Serif TC; margin-top:30px;'>03. AI 深度技術分析 (波浪/纏論/葛蘭威爾)</h4>", unsafe_allow_html=True)
+        st.markdown(ai_html, unsafe_allow_html=True)
+
+    except Exception as e:
+        st.error(f"系統執行錯誤：{e}")
