@@ -34,20 +34,22 @@ header {visibility: hidden;}
 st.markdown(custom_css, unsafe_allow_html=True)
 
 # ==========================================
-# 2. 側邊欄與表單 (台美大盤切換)
+# 2. 側邊欄 (大盤秒切換 + 持股表單防呆)
 # ==========================================
 st.sidebar.markdown("<h3 style='color:#c9a84c; font-family: Noto Serif TC;'>🌍 全球投資組合設定</h3>", unsafe_allow_html=True)
+
+# 【關鍵修改】大盤選項放在表單「外面」，點擊瞬間切換！
+market_choice = st.sidebar.radio(
+    "📊 選擇大盤分析基準",["台股加權指數 (^TWII)", "美股標普 500 (^GSPC)", "美股納斯達克 (^IXIC)"]
+)
+
+st.sidebar.write("---")
+
+# 【關鍵修改】持股輸入框放在表單「裡面」，打字才不會當機！
 with st.sidebar.form("setting_form"):
-    # 加入大盤選擇器
-    market_choice = st.radio(
-        "📊 選擇大盤分析基準",["台股加權指數 (^TWII)", "美股標普 500 (^GSPC)", "美股納斯達克 (^IXIC)"]
-    )
-    
-    st.write("---")
     st.write("💡 **持股輸入提示：**\n- 台股請加後綴 (如: `2330.TW`)\n- 美股直接輸入 (如: `NVDA`, `AAPL`)")
     user_input = st.text_area("請輸入持股代號 (用逗號分隔)", "2330.TW, NVDA, AAPL, 2603.TW")
-    
-    submit_btn = st.form_submit_button("🚀 啟動量化分析引擎")
+    submit_btn = st.form_submit_button("🚀 更新持股數據")
 
 # ==========================================
 # 3. 核心函數與快取機制
@@ -120,7 +122,6 @@ def get_ai_report(market_name, c, m5, m20, rsi, p_info):
 # ==========================================
 # 4. 畫面無條件渲染
 # ==========================================
-# 判斷使用者選擇的大盤
 if "台股加權指數" in market_choice:
     main_ticker, market_name = "^TWII", "台股加權指數"
 elif "標普 500" in market_choice:
@@ -173,7 +174,7 @@ with st.spinner(f'📡 讀取 {market_name} 與持股數據中...'):
         fig.update_layout(paper_bgcolor='#111318', plot_bgcolor='#111318', font=dict(color='#7a8090', family='JetBrains Mono'), margin=dict(l=10, r=10, t=30, b=10), xaxis=dict(showgrid=True, gridcolor='#1e2433', rangeslider=dict(visible=False)), yaxis=dict(showgrid=True, gridcolor='#1e2433'))
         st.plotly_chart(fig, use_container_width=True)
 
-        # 4. 渲染持股卡片 (台美混搭)
+        # 4. 渲染持股卡片
         st.markdown("<h4 style='color:#c9a84c; font-family:Noto Serif TC; margin-top:20px;'>02. 您的全球持股即時狀態</h4>", unsafe_allow_html=True)
         cols = st.columns(4)
         for idx, p in enumerate(port_data):
