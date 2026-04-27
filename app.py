@@ -6,18 +6,25 @@ from datetime import datetime
 import google.generativeai as genai
 import pandas as pd
 
-# 1. 網頁基本設定
+# 1. 網頁基本設定 (必須在最前面)
 st.set_page_config(page_title="台股 AI 專屬分析儀表板", layout="wide")
 st.title("🌟 台股大盤與專屬持股 AI 分析系統")
 st.markdown(f"**數據更新時間：** {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} (UTC)")
 
-# 2. 側邊欄：讓使用者可以在網頁上動態輸入股票
+# 2. 側邊欄設定
 st.sidebar.header("💼 設定您的投資組合")
 st.sidebar.write("請輸入台股代號 (上市加 .TW，上櫃加 .TWO)")
 user_input = st.sidebar.text_area("持股清單 (請用逗號分隔)", "2330.TW, 2317.TW, 2603.TW")
 
-# 按下按鈕才開始執行，避免浪費資源
-if st.sidebar.button("🚀 開始抓取數據與 AI 診斷"):
+# 🌟 魔法核心：使用 session_state 來判斷是不是第一次打開網頁
+if 'auto_run' not in st.session_state:
+    st.session_state.auto_run = True
+
+# 判斷：如果是第一次打開，或者使用者按下了更新按鈕，就執行以下動作
+if st.sidebar.button("🚀 更新持股與重新分析") or st.session_state.auto_run:
+    
+    # 執行過一次之後，就把自動開關關掉，避免打字時一直重新整理
+    st.session_state.auto_run = False
     
     with st.spinner('📡 正在抓取大盤與個股最新數據...'):
         # --- 抓取大盤資料 ---
@@ -37,7 +44,7 @@ if st.sidebar.button("🚀 開始抓取數據與 AI 診斷"):
 
         # --- 抓取動態輸入的個股資料 ---
         st.subheader("💼 您的專屬持股即時狀態")
-        tickers = [t.strip() for t in user_input.split(",")]
+        tickers =[t.strip() for t in user_input.split(",")]
         portfolio_data =[]
         portfolio_prompt_info = ""
 
@@ -59,7 +66,6 @@ if st.sidebar.button("🚀 開始抓取數據與 AI 診斷"):
 
     # --- 呼叫 AI 進行分析 ---
     with st.spinner('🤖 AI 正在進行波浪與纏論深度演算中 (約需 10~15 秒)...'):
-        # 在 Streamlit 中讀取安全金鑰的方法
         api_key = st.secrets.get("GEMINI_API_KEY") 
         
         if api_key:
@@ -78,11 +84,11 @@ if st.sidebar.button("🚀 開始抓取數據與 AI 診斷"):
                 ### 一、 大盤解析 (波浪與纏論視角)
                 ### 二、 明早大盤拉回機率與實戰策略
                 ### 三、 💼 我的專屬持股診斷
-                (針對我提供的每一檔股票，給出明確的技術面點評與進出場/防守建議)
+                (針對我提供的每一檔股票，依據均線型態，逐一給出明確的技術面點評與進出場/防守建議)
                 """
                 
-                # 自動挑選模型邏輯
-                target_model = 'gemini-1.5-flash' # 預設
+                # 自動搜尋最新模型
+                target_model = 'gemini-1.5-flash'
                 for m in genai.list_models():
                     if 'generateContent' in m.supported_generation_methods and 'gemini-2.5-flash' in m.name:
                         target_model = m.name
