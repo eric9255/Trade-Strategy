@@ -351,3 +351,10 @@ with st.spinner(f'📡 讀取 {market_name} 戰情室數據中...'):
                     <div style="font-size:12px; color:#7a8090;">5日線: {p['m5']:.2f} | 月線: {p['m20']:.2f}</div>
                 </div>
                 """, unsafe_allow_html=True)
+
+        st.markdown("<h4 style='color:#c9a84c; font-family:Noto Serif TC; margin-top:30px;'>🤖 戰情室專屬 AI 深度解析</h4>", unsafe_allow_html=True)
+        ai_html = get_ai_report(market_name, c, m5, m20, rsi, port_info)
+        st.markdown(ai_html, unsafe_allow_html=True)
+
+    except Exception as e:
+        st.error(f"系統執行錯誤：{e}")
