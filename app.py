@@ -39,6 +39,12 @@ header {visibility: hidden;}
 .theory-block-title { font-size: 14px; font-family: 'JetBrains Mono', monospace; color: var(--gold); letter-spacing: 0.12em; margin-bottom: 14px; border-bottom: 1px solid var(--border); padding-bottom: 10px;}
 .theory-text { font-size: 15px; color: #e8e4dc; line-height: 1.8; }
 .theory-text strong { color: var(--amber); }
+
+/* 【關鍵技術】四宮格強制對齊網格 */
+.four-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 15px; margin-bottom: 20px; align-items: stretch; }
+.four-grid .panel-box { margin-bottom: 0; display: flex; flex-direction: column; }
+@media (max-width: 1024px) { .four-grid { grid-template-columns: repeat(2, 1fr); } }
+@media (max-width: 600px) { .four-grid { grid-template-columns: 1fr; } }
 </style>
 """
 st.markdown(custom_css, unsafe_allow_html=True)
@@ -185,7 +191,6 @@ with st.spinner(f'📡 讀取 {market_name} 戰情室數據中...'):
         change_pct = (change / prev['Close']) * 100
         color_main = '#e05c5c' if change >= 0 else '#4caf82' 
         
-        # 【修復重點】補齊所有智能判斷邏輯
         trend_dir = "多頭趨勢" if c > m20 else "空頭趨勢"
         ma_status = "多頭排列" if m5 > m20 > m60 else "空頭排列" if m5 < m20 < m60 else "震盪糾結"
         price_pos = "貼近上軌 (過熱)" if c > bbu * 0.98 else "貼近下軌 (超賣)" if c < bbl * 1.02 else "中軌震盪"
@@ -280,12 +285,11 @@ with st.spinner(f'📡 讀取 {market_name} 戰情室數據中...'):
             </div>
             """, unsafe_allow_html=True)
 
-        # --- 第二層：並排四模組 (8大分析、型態、指標、操作) ---
-        c1, c2, c3, c4 = st.columns(4)
-        
-        with c1:
-            st.markdown("""
-            <div class="panel-box" style="height:100%;">
+        # --- 第二層：【關鍵技術】並排四模組，強制等高對齊 ---
+        st.markdown(f"""
+        <div class="four-grid">
+            <!-- 第一個框 -->
+            <div class="panel-box">
                 <div class="panel-title">葛蘭威爾 8 大法則</div>
                 <div class="gann-grid">
                     <div class="gann-cell" style="color:#7a8090;">買1<br>止跌</div><div class="gann-cell" style="color:#7a8090;">買2<br>回測</div><div class="gann-cell" style="color:#7a8090;">買3<br>假跌</div><div class="gann-cell" style="color:#7a8090;">買4<br>乖離</div>
@@ -293,11 +297,9 @@ with st.spinner(f'📡 讀取 {market_name} 戰情室數據中...'):
                 </div>
                 <div style="font-size:12px; color:#7a8090; margin-top:10px;">現狀評估：價格距離月線過遠，若出現爆量留長上影線，需提防符合<span style="color:#e05c5c">【賣4】嚴重超買拉回</span>法則。</div>
             </div>
-            """, unsafe_allow_html=True)
             
-        with c2:
-            st.markdown(f"""
-            <div class="panel-box" style="height:100%;">
+            <!-- 第二個框 -->
+            <div class="panel-box">
                 <div class="panel-title">型態分析 (W底 / M頭)</div>
                 <div style="font-size:13px; margin-bottom:10px;">
                     <strong style="color:#fff;">W底分析：</strong> <span style="color:#e05c5c;">❌ 未形成標準W底</span><br>
@@ -308,23 +310,19 @@ with st.spinner(f'📡 讀取 {market_name} 戰情室數據中...'):
                     <span style="color:#7a8090; font-size:12px;">理由：若跌破前波低點與月線 ({m20:,.0f})，則頭部成型。</span>
                 </div>
             </div>
-            """, unsafe_allow_html=True)
             
-        with c3:
-            st.markdown(f"""
-            <div class="panel-box" style="height:100%;">
+            <!-- 第三個框 -->
+            <div class="panel-box">
                 <div class="panel-title">技術指標總覽</div>
                 <div class="panel-item"><span class="panel-key">KD (9,3,3)</span><span class="panel-val" style="color:{'#e05c5c' if k>d else '#4caf82'}">{'⬆' if k>d else '⬇'} {k:.1f}/{d:.1f}</span></div>
                 <div class="panel-item"><span class="panel-key">MACD</span><span class="panel-val" style="color:{'#e05c5c' if macdh>0 else '#4caf82'}">{'⬆' if macdh>0 else '⬇'} {macd_status}</span></div>
-                <div class="panel-item"><span class="panel-key">均線排列</span><span class="panel-val">{'⬆' if m5>m20 else '⬇'} {m5>m20 and '偏多' or '偏空'}</span></div>
+                <div class="panel-item"><span class="panel-key">均線排列</span><span class="panel-val">{'⬆' if m5>m20 else '⬇'} {'偏多' if m5>m20 else '偏空'}</span></div>
                 <div class="panel-item"><span class="panel-key">布林通道</span><span class="panel-val">➡ {bb_status.split(' ')[0]}</span></div>
                 <div class="panel-item"><span class="panel-key">成交量</span><span class="panel-val">{'⬆' if vol>prev['Volume'] else '⬇'} {vol_status}</span></div>
             </div>
-            """, unsafe_allow_html=True)
 
-        with c4:
-            st.markdown(f"""
-            <div class="panel-box" style="height:100%;">
+            <!-- 第四個框 -->
+            <div class="panel-box">
                 <div class="panel-title">明日漲跌機率與操作建議</div>
                 <div class="prob-grid" style="margin-bottom:10px;">
                     <div class="prob-card" style="border-top-color: #e05c5c;"><div class="prob-title">上漲</div><div class="prob-val" style="color: #e05c5c;">{up_prob}%</div></div>
@@ -337,7 +335,8 @@ with st.spinner(f'📡 讀取 {market_name} 戰情室數據中...'):
                     <li><strong style="color:#e05c5c;">防守:</strong> 跌破 {m20:,.0f} 轉弱停損</li>
                 </ul>
             </div>
-            """, unsafe_allow_html=True)
+        </div>
+        """, unsafe_allow_html=True)
 
         # --- 第三層：持股卡片與 AI 長文分析 ---
         st.write("---")
@@ -352,10 +351,3 @@ with st.spinner(f'📡 讀取 {market_name} 戰情室數據中...'):
                     <div style="font-size:12px; color:#7a8090;">5日線: {p['m5']:.2f} | 月線: {p['m20']:.2f}</div>
                 </div>
                 """, unsafe_allow_html=True)
-
-        st.markdown("<h4 style='color:#c9a84c; font-family:Noto Serif TC; margin-top:30px;'>🤖 戰情室專屬 AI 深度解析</h4>", unsafe_allow_html=True)
-        ai_html = get_ai_report(market_name, c, m5, m20, rsi, port_info)
-        st.markdown(ai_html, unsafe_allow_html=True)
-
-    except Exception as e:
-        st.error(f"系統執行錯誤：{e}")
