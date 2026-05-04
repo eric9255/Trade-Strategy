@@ -11,7 +11,7 @@ import requests
 # ==========================================
 # 1. 網頁基本設定 & 注入戰情室專屬 CSS
 # ==========================================
-st.set_page_config(page_title="全球 AI 量化戰情室 (終極版)", layout="wide")
+st.set_page_config(page_title="全球 AI 量化戰情室", layout="wide")
 
 custom_css = """
 <style>
@@ -21,7 +21,7 @@ header {visibility: hidden;}
 :root { --gold: #c9a84c; --red: #e05c5c; --green: #4caf82; --amber: #e8a24a; --surface: #111318; --surface2: #181c24; --border: #1e2433; --text-dim: #7a8090; }
 .custom-header { border-bottom: 1px solid var(--border); padding-bottom: 10px; margin-bottom: 15px; position: relative; }
 .custom-header h1 { font-size: 28px; font-weight: 900; color: #fff; margin: 0;}
-.panel-box { background: var(--surface); border: 1px solid var(--border); border-radius: 4px; padding: 12px; margin-bottom: 12px; }
+.panel-box { background: var(--surface); border: 1px solid var(--border); border-radius: 4px; padding: 12px; margin-bottom: 12px; height: 100%; }
 .panel-title { font-size: 14px; font-family: 'Noto Serif TC'; color: #fff; border-bottom: 1px solid var(--border); padding-bottom: 6px; margin-bottom: 8px; font-weight: bold; text-align: center; }
 .panel-item { display: flex; justify-content: space-between; font-size: 13px; margin-bottom: 6px; padding-bottom: 6px; border-bottom: 1px dashed rgba(255,255,255,0.05); }
 .panel-item:last-child { border-bottom: none; margin-bottom: 0; padding-bottom: 0; }
@@ -35,6 +35,10 @@ header {visibility: hidden;}
 .bullet-list { font-size: 12px; color: var(--text-dim); line-height: 1.6; margin:0; padding-left: 15px;}
 .bullet-list li { margin-bottom: 4px; }
 .bb-text { font-family: 'JetBrains Mono'; font-size: 12px; color: var(--text-dim); margin-right: 15px;}
+.theory-block { background: var(--surface); border: 1px solid var(--border); border-radius: 4px; padding: 20px; margin-bottom: 16px; }
+.theory-block-title { font-size: 14px; font-family: 'JetBrains Mono', monospace; color: var(--gold); letter-spacing: 0.12em; margin-bottom: 14px; border-bottom: 1px solid var(--border); padding-bottom: 10px;}
+.theory-text { font-size: 15px; color: #e8e4dc; line-height: 1.8; }
+.theory-text strong { color: var(--amber); }
 </style>
 """
 st.markdown(custom_css, unsafe_allow_html=True)
@@ -64,19 +68,20 @@ def fetch_market_data(main_ticker, tickers_str):
     df.ta.macd(append=True)
     df.ta.stoch(append=True)
     
-    # 抓取多週期
     df_wk = yf.Ticker(main_ticker).history(period="2y", interval="1wk")
     df_wk.ta.sma(length=20, append=True)
     
     tickers =[t.strip() for t in tickers_str.split(",") if t.strip()]
-    p_data =[]
+    p_data, p_info =[], ""
     for t in tickers:
         stk = yf.Ticker(t).history(period="1mo")
         if not stk.empty and len(stk) >= 20:
             stk.ta.sma(length=5, append=True)
             stk.ta.sma(length=20, append=True)
-            p_data.append({"ticker": t.upper(), "c": stk['Close'].iloc[-1], "m5": stk['SMA_5'].iloc[-1], "m20": stk['SMA_20'].iloc[-1]})
-    return df, df_wk, p_data
+            sc, sm5, sm20 = stk['Close'].iloc[-1], stk['SMA_5'].iloc[-1], stk['SMA_20'].iloc[-1]
+            p_data.append({"ticker": t.upper(), "c": sc, "m5": sm5, "m20": sm20})
+            p_info += f"- {t.upper()}: 收盤 {sc:.2f}, 5MA {sm5:.2f}, 20MA {sm20:.2f}。\n"
+    return df, df_wk, p_data, p_info
 
 @st.cache_data(ttl=3600)
 def fetch_taiwan_chips():
@@ -97,6 +102,54 @@ def fetch_taiwan_chips():
             return chips
     except: return None
 
+@st.cache_data(ttl=3600)
+def get_ai_report(market_name, c, m5, m20, rsi, p_info):
+    api_key = st.secrets.get("GEMINI_API_KEY") 
+    if not api_key: return "<p style='color:#e8a24a;'>⚠️ 系統尚未設定 GEMINI_API_KEY。</p>"
+    try:
+        genai.configure(api_key=api_key)
+        prompt = f"""
+        你是擁有 20 年經驗的華爾街頂級量化分析師。
+        今日大盤基準為【{market_name}】，客觀數據：收盤 {c:.2f}，5MA {m5:.2f}，20MA {m20:.2f}，RSI {rsi:.1f}。
+        我的持股組合如下: {p_info}
+
+        請提供深度分析報告。你**必須完全使用以下 HTML 結構與 Class 排版**。
+        ⚠️ 請直接輸出純 HTML，絕對不要包含 ```html 標記，也絕對不要在每一行開頭加上空白縮排！
+
+        <div class="theory-block">
+        <div class="theory-block-title">▸ 【{market_name}】解析 (波浪與纏論視角)</div>
+        <div class="theory-text">
+        (你的大盤分析內容，重點文字請使用 <strong> 標籤包裝)
+        </div>
+        </div>
+
+        <div class="theory-block">
+        <div class="theory-block-title">▸ 明早走勢推演與實戰策略</div>
+        <div class="theory-text">
+        (你的策略推演，若有看空/危險的文字請加上 <span style="color:#e05c5c">，看多請加上 <span style="color:#4caf82">)
+        </div>
+        </div>
+
+        <div class="theory-block">
+        <div class="theory-block-title">▸ 💼 全球專屬持股診斷</div>
+        <div class="theory-text">
+        (針對每一檔個股給出明確的技術面點評與防守建議，請使用 <ul> <li> 排版)
+        </div>
+        </div>
+        """
+        target_model = 'gemini-1.5-flash'
+        for m in genai.list_models():
+            if 'generateContent' in m.supported_generation_methods and 'gemini-2.5-flash' in m.name:
+                target_model = m.name
+                break
+        model = genai.GenerativeModel(target_model)
+        response = model.generate_content(prompt)
+        raw_text = response.text.replace("```html", "").replace("```", "")
+        clean_text = "\n".join([line.strip() for line in raw_text.split('\n')])
+        return clean_text
+    except Exception as e:
+        return f"<p style='color:#e05c5c;'>🤖 API 錯誤：{e}</p>"
+
 # ==========================================
 # 4. 戰情室版面渲染
 # ==========================================
@@ -109,14 +162,14 @@ else:
 
 with st.spinner(f'📡 讀取 {market_name} 戰情室數據中...'):
     try:
-        df, df_wk, port_data = fetch_market_data(main_ticker, user_input)
+        df, df_wk, port_data, port_info = fetch_market_data(main_ticker, user_input)
         
-        # 動態欄位抓取
         bbu_col =[c for c in df.columns if c.startswith('BBU')][0]
         bbm_col =[c for c in df.columns if c.startswith('BBM')][0]
         bbl_col =[c for c in df.columns if c.startswith('BBL')][0]
         macd_col =[c for c in df.columns if c.startswith('MACD_')][0]
         macdh_col =[c for c in df.columns if c.startswith('MACDh_')][0]
+        macds_col =[c for c in df.columns if c.startswith('MACDs_')][0]
         k_col =[c for c in df.columns if c.startswith('STOCHk')][0]
         d_col =[c for c in df.columns if c.startswith('STOCHd')][0]
 
@@ -130,16 +183,16 @@ with st.spinner(f'📡 讀取 {market_name} 戰情室數據中...'):
         
         change = c - prev['Close']
         change_pct = (change / prev['Close']) * 100
-        color_main = '#e05c5c' if change >= 0 else '#4caf82' # 台股習慣：紅漲綠跌
+        color_main = '#e05c5c' if change >= 0 else '#4caf82' 
         
-        # 智能判斷邏輯
+        # 【修復重點】補齊所有智能判斷邏輯
         trend_dir = "多頭趨勢" if c > m20 else "空頭趨勢"
-        ma_status = "多頭排列 (5>20>60)" if m5 > m20 > m60 else "空頭排列" if m5 < m20 < m60 else "震盪糾結"
+        ma_status = "多頭排列" if m5 > m20 > m60 else "空頭排列" if m5 < m20 < m60 else "震盪糾結"
         price_pos = "貼近上軌 (過熱)" if c > bbu * 0.98 else "貼近下軌 (超賣)" if c < bbl * 1.02 else "中軌震盪"
         vol_status = "量增上漲" if vol > prev['Volume'] and change > 0 else "量縮震盪"
-        bb_status = "開口擴大 (趨勢加速)" if (bbu - bbl) > (prev[bbu_col] - prev[bbl_col]) else "通道收斂 (盤整)"
+        bb_status = "開口擴大" if (bbu - bbl) > (prev[bbu_col] - prev[bbl_col]) else "通道收斂"
+        macd_status = "多頭延續" if macdh > 0 and macdh > prev[macdh_col] else "多頭降溫" if macdh > 0 else "空頭延續"
         
-        # 勝率模型 (簡化版)
         down_prob = min(max(int((rsi - 50) * 1.5 + ((c - m20)/m20*100 * 5)), 10), 85)
         up_prob = max(100 - down_prob - 15, 5)
         flat_prob = 100 - up_prob - down_prob
@@ -164,14 +217,12 @@ with st.spinner(f'📡 讀取 {market_name} 戰情室數據中...'):
 
         with col_main:
             fig = make_subplots(rows=4, cols=1, shared_xaxes=True, vertical_spacing=0.02, row_heights=[0.5, 0.15, 0.15, 0.2])
-            
             fig.add_trace(go.Candlestick(x=df.index, open=df['Open'], high=df['High'], low=df['Low'], close=df['Close'], increasing_line_color='#e05c5c', decreasing_line_color='#4caf82', name='K線'), row=1, col=1)
             fig.add_trace(go.Scatter(x=df.index, y=df['SMA_5'], mode='lines', name='5MA', line=dict(color='#e8a24a', width=1)), row=1, col=1)
             fig.add_trace(go.Scatter(x=df.index, y=df['SMA_20'], mode='lines', name='20MA', line=dict(color='#c9a84c', width=1)), row=1, col=1)
             fig.add_trace(go.Scatter(x=df.index, y=df['SMA_60'], mode='lines', name='60MA', line=dict(color='#4a8fe8', width=1)), row=1, col=1)
             fig.add_trace(go.Scatter(x=df.index, y=df[bbu_col], mode='lines', line=dict(color='rgba(255,255,255,0.2)', width=1, dash='dot'), name='上軌'), row=1, col=1)
             fig.add_trace(go.Scatter(x=df.index, y=df[bbl_col], mode='lines', line=dict(color='rgba(255,255,255,0.2)', width=1, dash='dot'), name='下軌', fill='tonexty', fillcolor='rgba(255,255,255,0.02)'), row=1, col=1)
-
             colors =['#e05c5c' if row['Close'] >= row['Open'] else '#4caf82' for index, row in df.iterrows()]
             fig.add_trace(go.Bar(x=df.index, y=df['Volume'], marker_color=colors, name='成交量'), row=2, col=1)
             fig.add_trace(go.Scatter(x=df.index, y=df[k_col], mode='lines', name='K', line=dict(color='#e05c5c', width=1.5)), row=3, col=1)
@@ -188,7 +239,6 @@ with st.spinner(f'📡 讀取 {market_name} 戰情室數據中...'):
             st.plotly_chart(fig, use_container_width=True)
 
         with col_side:
-            # 1. 技術分析總覽
             st.markdown(f"""
             <div class="panel-box">
                 <div class="panel-title">技術分析總覽</div>
@@ -200,7 +250,6 @@ with st.spinner(f'📡 讀取 {market_name} 戰情室數據中...'):
             </div>
             """, unsafe_allow_html=True)
 
-            # 2. 籌碼分析 (台股) 或 多週期 (美股)
             if market_name == "台股加權指數":
                 chips = fetch_taiwan_chips()
                 if chips:
@@ -222,7 +271,6 @@ with st.spinner(f'📡 讀取 {market_name} 戰情室數據中...'):
                 </div>
                 """, unsafe_allow_html=True)
 
-            # 3. 關鍵價位
             st.markdown(f"""
             <div class="panel-box">
                 <div class="panel-title">關鍵價位防守</div>
@@ -290,6 +338,24 @@ with st.spinner(f'📡 讀取 {market_name} 戰情室數據中...'):
                 </ul>
             </div>
             """, unsafe_allow_html=True)
+
+        # --- 第三層：持股卡片與 AI 長文分析 ---
+        st.write("---")
+        st.markdown("<h4 style='color:#c9a84c; font-family:Noto Serif TC;'>💼 您的全球持股即時監控</h4>", unsafe_allow_html=True)
+        cols = st.columns(len(port_data) if len(port_data) > 0 else 1)
+        for idx, p in enumerate(port_data):
+            with cols[idx]:
+                st.markdown(f"""
+                <div style="background:#111318; border:1px solid #1e2433; padding:15px; border-radius:4px; border-left:3px solid {'#e05c5c' if p['c']>p['m20'] else '#4caf82'};">
+                    <div style="color:#c9a84c; font-family:'JetBrains Mono'; font-size:16px; font-weight:bold;">{p['ticker']}</div>
+                    <div style="font-family:'JetBrains Mono'; font-size:24px; color:#fff; margin:10px 0;">{p['c']:.2f}</div>
+                    <div style="font-size:12px; color:#7a8090;">5日線: {p['m5']:.2f} | 月線: {p['m20']:.2f}</div>
+                </div>
+                """, unsafe_allow_html=True)
+
+        st.markdown("<h4 style='color:#c9a84c; font-family:Noto Serif TC; margin-top:30px;'>🤖 戰情室專屬 AI 深度解析</h4>", unsafe_allow_html=True)
+        ai_html = get_ai_report(market_name, c, m5, m20, rsi, port_info)
+        st.markdown(ai_html, unsafe_allow_html=True)
 
     except Exception as e:
         st.error(f"系統執行錯誤：{e}")
