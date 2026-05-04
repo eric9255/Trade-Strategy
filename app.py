@@ -2,6 +2,7 @@ import streamlit as st
 import yfinance as yf
 import pandas_ta as ta
 import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 from datetime import datetime
 import google.generativeai as genai
 import pandas as pd
@@ -34,7 +35,7 @@ header {visibility: hidden;}
 st.markdown(custom_css, unsafe_allow_html=True)
 
 # ==========================================
-# 2. 側邊欄 (大盤秒切換 + 持股表單)
+# 2. 側邊欄 (大盤秒切換 + 持股表單防呆)
 # ==========================================
 st.sidebar.markdown("<h3 style='color:#c9a84c; font-family: Noto Serif TC;'>🌍 全球投資組合設定</h3>", unsafe_allow_html=True)
 
@@ -77,7 +78,6 @@ def get_ai_report(market_name, c, m5, m20, rsi, p_info):
     if not api_key: return "<p style='color:#e8a24a;'>⚠️ 系統尚未設定 GEMINI_API_KEY。</p>"
     try:
         genai.configure(api_key=api_key)
-        # 【修改提示詞】取消所有範例的縮排，告訴 AI 絕對不要縮排
         prompt = f"""
         你是擁有 20 年經驗的華爾街頂級量化分析師。
         今日大盤基準為【{market_name}】，客觀數據：收盤 {c:.2f}，5MA {m5:.2f}，20MA {m20:.2f}，RSI {rsi:.1f}。
@@ -116,10 +116,8 @@ def get_ai_report(market_name, c, m5, m20, rsi, p_info):
         model = genai.GenerativeModel(target_model)
         response = model.generate_content(prompt)
         
-        # 【終極防護】把每一行前面的空白強制刪除，阻止 Markdown 變成程式碼區塊
         raw_text = response.text.replace("```html", "").replace("```", "")
         clean_text = "\n".join([line.strip() for line in raw_text.split('\n')])
-        
         return clean_text
     except Exception as e:
         return f"<p style='color:#e05c5c;'>🤖 API 錯誤：{e}</p>"
@@ -171,12 +169,48 @@ with st.spinner(f'📡 讀取 {market_name} 與持股數據中...'):
         </div>
         """, unsafe_allow_html=True)
 
-        # 3. 渲染 K線圖
-        st.markdown(f"<h4 style='color:#c9a84c; font-family:Noto Serif TC; margin-top:20px;'>01. {market_name} 日線走勢與均線 (Interactive Chart)</h4>", unsafe_allow_html=True)
-        fig = go.Figure(data=[go.Candlestick(x=df.index, open=df['Open'], high=df['High'], low=df['Low'], close=df['Close'], increasing_line_color='#4caf82', decreasing_line_color='#e05c5c', name='K線')])
-        fig.add_trace(go.Scatter(x=df.index, y=df['SMA_5'], mode='lines', name='5MA', line=dict(color='#c9a84c', width=1.5)))
-        fig.add_trace(go.Scatter(x=df.index, y=df['SMA_20'], mode='lines', name='20MA', line=dict(color='#4a8fe8', width=1.5)))
-        fig.update_layout(paper_bgcolor='#111318', plot_bgcolor='#111318', font=dict(color='#7a8090', family='JetBrains Mono'), margin=dict(l=10, r=10, t=30, b=10), xaxis=dict(showgrid=True, gridcolor='#1e2433', rangeslider=dict(visible=False)), yaxis=dict(showgrid=True, gridcolor='#1e2433'))
+        # 3. 渲染四合一專業圖表
+        st.markdown(f"<h4 style='color:#c9a84c; font-family:Noto Serif TC; margin-top:20px;'>01. {market_name} 多重指標技術分析 (Interactive)</h4>", unsafe_allow_html=True)
+        
+        # 計算 KD 與 MACD
+        df.ta.macd(append=True)
+        df.ta.stoch(append=True)
+        
+        # 建立四層子圖表
+        fig = make_subplots(rows=4, cols=1, shared_xaxes=True, vertical_spacing=0.02, row_heights=[0.5, 0.15, 0.15, 0.2])
+
+        # 第一層：K線與均線 (台股紅綠配色)
+        fig.add_trace(go.Candlestick(x=df.index, open=df['Open'], high=df['High'], low=df['Low'], close=df['Close'], 
+                                     increasing_line_color='#e05c5c', decreasing_line_color='#4caf82', name='K線'), row=1, col=1)
+        fig.add_trace(go.Scatter(x=df.index, y=df['SMA_5'], mode='lines', name='5MA', line=dict(color='#c9a84c', width=1.5)), row=1, col=1)
+        fig.add_trace(go.Scatter(x=df.index, y=df['SMA_20'], mode='lines', name='20MA', line=dict(color='#4a8fe8', width=1.5)), row=1, col=1)
+
+        # 第二層：成交量
+        colors =['#e05c5c' if row['Close'] >= row['Open'] else '#4caf82' for index, row in df.iterrows()]
+        fig.add_trace(go.Bar(x=df.index, y=df['Volume'], marker_color=colors, name='成交量'), row=2, col=1)
+
+        # 第三層：KD 指標
+        fig.add_trace(go.Scatter(x=df.index, y=df['STOCHk_14_3_3'], mode='lines', name='K(9)', line=dict(color='#e05c5c', width=1.5)), row=3, col=1)
+        fig.add_trace(go.Scatter(x=df.index, y=df['STOCHd_14_3_3'], mode='lines', name='D(9)', line=dict(color='#4a8fe8', width=1.5)), row=3, col=1)
+        fig.add_hline(y=80, line_dash="dot", line_color="rgba(255,255,255,0.2)", row=3, col=1)
+        fig.add_hline(y=20, line_dash="dot", line_color="rgba(255,255,255,0.2)", row=3, col=1)
+
+        # 第四層：MACD 指標
+        fig.add_trace(go.Scatter(x=df.index, y=df['MACD_12_26_9'], mode='lines', name='DIF', line=dict(color='#e05c5c', width=1.5)), row=4, col=1)
+        fig.add_trace(go.Scatter(x=df.index, y=df['MACDs_12_26_9'], mode='lines', name='MACD', line=dict(color='#4a8fe8', width=1.5)), row=4, col=1)
+        macd_colors =['#e05c5c' if val >= 0 else '#4caf82' for val in df['MACDh_12_26_9']]
+        fig.add_trace(go.Bar(x=df.index, y=df['MACDh_12_26_9'], marker_color=macd_colors, name='OSC'), row=4, col=1)
+
+        # 統整版面設計
+        fig.update_layout(
+            paper_bgcolor='#0a0c10', plot_bgcolor='#111318', font=dict(color='#7a8090', family='JetBrains Mono'),
+            margin=dict(l=10, r=40, t=10, b=10), height=800, showlegend=False, xaxis=dict(rangeslider=dict(visible=False)),
+            xaxis4=dict(showgrid=True, gridcolor='#1e2433')
+        )
+        fig.update_yaxes(showgrid=True, gridcolor='#1e2433', tickfont=dict(size=10))
+        fig.update_xaxes(showgrid=True, gridcolor='#1e2433', showticklabels=False)
+        fig.update_xaxes(showticklabels=True, row=4, col=1)
+
         st.plotly_chart(fig, use_container_width=True)
 
         # 4. 渲染持股卡片
@@ -185,7 +219,7 @@ with st.spinner(f'📡 讀取 {market_name} 與持股數據中...'):
         for idx, p in enumerate(port_data):
             with cols[idx % 4]:
                 st.markdown(f"""
-                <div style="background:#111318; border:1px solid #1e2433; padding:15px; border-radius:4px; border-left:3px solid {'#4caf82' if p['c']>p['m20'] else '#e05c5c'};">
+                <div style="background:#111318; border:1px solid #1e2433; padding:15px; border-radius:4px; border-left:3px solid {'#e05c5c' if p['c']>p['m20'] else '#4caf82'};">
                     <div style="color:#c9a84c; font-family:'JetBrains Mono'; font-size:16px; font-weight:bold;">{p['ticker']}</div>
                     <div style="font-family:'JetBrains Mono'; font-size:24px; color:#fff; margin:10px 0;">{p['c']:.2f}</div>
                     <div style="font-size:12px; color:#7a8090;">5日線: {p['m5']:.2f} | 月線: {p['m20']:.2f}</div>
