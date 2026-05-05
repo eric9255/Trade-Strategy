@@ -39,6 +39,8 @@ header {visibility: hidden;}
 .theory-block-title { font-size: 14px; font-family: 'JetBrains Mono', monospace; color: var(--gold); letter-spacing: 0.12em; margin-bottom: 14px; border-bottom: 1px solid var(--border); padding-bottom: 10px;}
 .theory-text { font-size: 15px; color: #e8e4dc; line-height: 1.8; }
 .theory-text strong { color: var(--amber); }
+
+/* 四宮格強制對齊 */
 .four-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 15px; margin-bottom: 20px; align-items: stretch; }
 .four-grid .panel-box { margin-bottom: 0; display: flex; flex-direction: column; }
 @media (max-width: 1024px) { .four-grid { grid-template-columns: repeat(2, 1fr); } }
@@ -54,7 +56,7 @@ st.sidebar.markdown("<h3 style='color:#c9a84c;'>🌍 全球投資組合設定</h
 market_choice = st.sidebar.radio("📊 大盤基準",["台股加權指數 (^TWII)", "美股標普 500 (^GSPC)", "美股納斯達克 (^IXIC)"])
 st.sidebar.write("---")
 with st.sidebar.form("setting_form"):
-    user_input = st.text_area("請輸入持股代號 (用逗號分隔)", "2330.TW, NVDA, AAPL")
+    user_input = st.text_area("請輸入持股代號 (用逗號分隔)", "2330.TW, 2408.TW, NVDA")
     submit_btn = st.form_submit_button("🚀 更新戰情室數據")
 
 # ==========================================
@@ -78,14 +80,22 @@ def fetch_market_data(main_ticker, tickers_str):
     tickers =[t.strip() for t in tickers_str.split(",") if t.strip()]
     p_data, p_info =[], ""
     for t in tickers:
-        # 【關鍵修復】將 1mo 改為 3mo，避免因為連假導致交易日少於 20 天而算不出均線
-        stk = yf.Ticker(t).history(period="3mo")
+        ticker_obj = yf.Ticker(t)
+        stk = ticker_obj.history(period="3mo") # 確保抓取 3 個月，避開連假陷阱
         if not stk.empty and len(stk) >= 20:
             stk.ta.sma(length=5, append=True)
             stk.ta.sma(length=20, append=True)
             sc, sm5, sm20 = stk['Close'].iloc[-1], stk['SMA_5'].iloc[-1], stk['SMA_20'].iloc[-1]
-            p_data.append({"ticker": t.upper(), "c": sc, "m5": sm5, "m20": sm20})
-            p_info += f"- {t.upper()}: 收盤 {sc:.2f}, 5MA {sm5:.2f}, 20MA {sm20:.2f}。\n"
+            
+            # 【防幻覺機制】主動向 Yahoo 抓取股票官方名稱
+            try:
+                stock_name = ticker_obj.info.get('shortName', '') or ticker_obj.info.get('longName', '')
+                display_ticker = f"{t.upper()} {stock_name}" if stock_name else t.upper()
+            except:
+                display_ticker = t.upper()
+
+            p_data.append({"ticker": display_ticker, "c": sc, "m5": sm5, "m20": sm20})
+            p_info += f"- {display_ticker}: 收盤 {sc:.2f}, 5MA {sm5:.2f}, 20MA {sm20:.2f}。\n"
     return df, df_wk, p_data, p_info
 
 @st.cache_data(ttl=3600)
@@ -113,13 +123,17 @@ def get_ai_report(market_name, c, m5, m20, rsi, p_info):
     if not api_key: return "<p style='color:#e8a24a;'>⚠️ 系統尚未設定 GEMINI_API_KEY。</p>"
     try:
         genai.configure(api_key=api_key)
+        
+        # 【防呆咒語】嚴格禁止 AI 自行捏造股票名稱
         prompt = f"""
         你是擁有 20 年經驗的華爾街頂級量化分析師。
         今日大盤基準為【{market_name}】，客觀數據：收盤 {c:.2f}，5MA {m5:.2f}，20MA {m20:.2f}，RSI {rsi:.1f}。
-        我的持股組合如下: {p_info}
+        我的持股組合如下: 
+        {p_info}
 
         請提供深度分析報告。你**必須完全使用以下 HTML 結構與 Class 排版**。
-        ⚠️ 請直接輸出純 HTML，絕對不要包含 ```html 標記，也絕對不要在每一行開頭加上空白縮排！
+        ⚠️ 嚴格規定 1：請直接輸出純 HTML，絕對不要包含 ```html 標記，也絕對不要在每一行開頭加上空白縮排！
+        ⚠️ 嚴格規定 2：針對個股分析時，請【完全照抄】我提供給你的「代號與股票名稱」，絕對不准自行猜測、翻譯或捏造股票名稱！
 
 <div class="theory-block">
 <div class="theory-block-title">▸ 【{market_name}】解析 (波浪與纏論視角)</div>
@@ -289,7 +303,7 @@ with st.spinner(f'📡 讀取 {market_name} 戰情室數據中...'):
 """
             st.markdown(levels_html, unsafe_allow_html=True)
 
-        # --- 第二層：四宮格 ---
+        # --- 第二層：四宮格強制對齊 ---
         color_kd = '#e05c5c' if k>d else '#4caf82'
         color_macd = '#e05c5c' if macdh>0 else '#4caf82'
         
@@ -352,9 +366,9 @@ with st.spinner(f'📡 讀取 {market_name} 戰情室數據中...'):
             with cols[idx]:
                 st.markdown(f"""
 <div style="background:#111318; border:1px solid #1e2433; padding:15px; border-radius:4px; border-left:3px solid {'#e05c5c' if p['c']>p['m20'] else '#4caf82'};">
-<div style="color:#c9a84c; font-family:'JetBrains Mono'; font-size:16px; font-weight:bold;">{p['ticker']}</div>
-<div style="font-family:'JetBrains Mono'; font-size:24px; color:#fff; margin:10px 0;">{p['c']:.2f}</div>
-<div style="font-size:12px; color:#7a8090;">5日線: {p['m5']:.2f} | 月線: {p['m20']:.2f}</div>
+<div style="color:#c9a84c; font-family:'JetBrains Mono'; font-size:16px; font-weight:bold; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;" title="{p['ticker']}">{p['ticker']}</div>
+<div style="font-family:'JetBrains Mono'; font-size:24px; color:#fff; margin:10px 0;">{p['c']:,.2f}</div>
+<div style="font-size:12px; color:#7a8090;">5日線: {p['m5']:,.2f} | 月線: {p['m20']:,.2f}</div>
 </div>
                 """, unsafe_allow_html=True)
 
@@ -363,4 +377,5 @@ with st.spinner(f'📡 讀取 {market_name} 戰情室數據中...'):
         st.markdown(ai_html, unsafe_allow_html=True)
 
     except Exception as e:
+        st.error(f"系統執行錯誤：{e}")
         st.error(f"系統執行錯誤：{e}")
