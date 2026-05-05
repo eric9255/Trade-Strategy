@@ -39,8 +39,6 @@ header {visibility: hidden;}
 .theory-block-title { font-size: 14px; font-family: 'JetBrains Mono', monospace; color: var(--gold); letter-spacing: 0.12em; margin-bottom: 14px; border-bottom: 1px solid var(--border); padding-bottom: 10px;}
 .theory-text { font-size: 15px; color: #e8e4dc; line-height: 1.8; }
 .theory-text strong { color: var(--amber); }
-
-/* 四宮格強制對齊 */
 .four-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 15px; margin-bottom: 20px; align-items: stretch; }
 .four-grid .panel-box { margin-bottom: 0; display: flex; flex-direction: column; }
 @media (max-width: 1024px) { .four-grid { grid-template-columns: repeat(2, 1fr); } }
@@ -62,6 +60,17 @@ with st.sidebar.form("setting_form"):
 # ==========================================
 # 3. 核心函數與快取
 # ==========================================
+@st.cache_data(ttl=86400) # 公司名字可以記久一點 (1天)
+def get_stock_name(ticker):
+    # 秘密通道：利用 Yahoo Search API 繞過封鎖抓取真實公司名
+    try:
+        url = f"https://query2.finance.yahoo.com/v1/finance/search?q={ticker}"
+        headers = {'User-Agent': 'Mozilla/5.0'}
+        res = requests.get(url, headers=headers, timeout=3).json()
+        return res['quotes'][0]['shortname']
+    except:
+        return ""
+
 @st.cache_data(ttl=1800)
 def fetch_market_data(main_ticker, tickers_str):
     df = yf.Ticker(main_ticker).history(period="6mo")
@@ -80,20 +89,16 @@ def fetch_market_data(main_ticker, tickers_str):
     tickers =[t.strip() for t in tickers_str.split(",") if t.strip()]
     p_data, p_info =[], ""
     for t in tickers:
-        ticker_obj = yf.Ticker(t)
-        stk = ticker_obj.history(period="3mo") # 確保抓取 3 個月，避開連假陷阱
+        stk = yf.Ticker(t).history(period="3mo")
         if not stk.empty and len(stk) >= 20:
             stk.ta.sma(length=5, append=True)
             stk.ta.sma(length=20, append=True)
             sc, sm5, sm20 = stk['Close'].iloc[-1], stk['SMA_5'].iloc[-1], stk['SMA_20'].iloc[-1]
             
-            # 【防幻覺機制】主動向 Yahoo 抓取股票官方名稱
-            try:
-                stock_name = ticker_obj.info.get('shortName', '') or ticker_obj.info.get('longName', '')
-                display_ticker = f"{t.upper()} {stock_name}" if stock_name else t.upper()
-            except:
-                display_ticker = t.upper()
-
+            # 取得真實股名
+            stock_name = get_stock_name(t)
+            display_ticker = f"{t.upper()} {stock_name}" if stock_name else t.upper()
+            
             p_data.append({"ticker": display_ticker, "c": sc, "m5": sm5, "m20": sm20})
             p_info += f"- {display_ticker}: 收盤 {sc:.2f}, 5MA {sm5:.2f}, 20MA {sm20:.2f}。\n"
     return df, df_wk, p_data, p_info
@@ -124,7 +129,7 @@ def get_ai_report(market_name, c, m5, m20, rsi, p_info):
     try:
         genai.configure(api_key=api_key)
         
-        # 【防呆咒語】嚴格禁止 AI 自行捏造股票名稱
+        # 【強制排版指令】逼迫 AI 必須把代號跟名稱一字不漏地印出來！
         prompt = f"""
         你是擁有 20 年經驗的華爾街頂級量化分析師。
         今日大盤基準為【{market_name}】，客觀數據：收盤 {c:.2f}，5MA {m5:.2f}，20MA {m20:.2f}，RSI {rsi:.1f}。
@@ -132,8 +137,10 @@ def get_ai_report(market_name, c, m5, m20, rsi, p_info):
         {p_info}
 
         請提供深度分析報告。你**必須完全使用以下 HTML 結構與 Class 排版**。
-        ⚠️ 嚴格規定 1：請直接輸出純 HTML，絕對不要包含 ```html 標記，也絕對不要在每一行開頭加上空白縮排！
-        ⚠️ 嚴格規定 2：針對個股分析時，請【完全照抄】我提供給你的「代號與股票名稱」，絕對不准自行猜測、翻譯或捏造股票名稱！
+        ⚠️ 嚴格規定：
+        1. 絕對不要包含 ```html 標記！
+        2. 絕對不要在每一行開頭加上空白縮排！
+        3. 在「全球專屬持股診斷」中，針對每一檔股票，請嚴格使用此格式：<li><strong>【代號與名稱】</strong>：你的分析內容...</li>
 
 <div class="theory-block">
 <div class="theory-block-title">▸ 【{market_name}】解析 (波浪與纏論視角)</div>
@@ -152,7 +159,9 @@ def get_ai_report(market_name, c, m5, m20, rsi, p_info):
 <div class="theory-block">
 <div class="theory-block-title">▸ 💼 全球專屬持股診斷</div>
 <div class="theory-text">
-(針對每一檔個股給出明確的技術面點評與防守建議，請使用 <ul> <li> 排版)
+<ul>
+(請針對每一檔股票輸出一個 <li> 標籤，並將股票名稱用 <strong>【】</strong> 包起來)
+</ul>
 </div>
 </div>
         """
@@ -303,7 +312,7 @@ with st.spinner(f'📡 讀取 {market_name} 戰情室數據中...'):
 """
             st.markdown(levels_html, unsafe_allow_html=True)
 
-        # --- 第二層：四宮格強制對齊 ---
+        # --- 第二層：四宮格 ---
         color_kd = '#e05c5c' if k>d else '#4caf82'
         color_macd = '#e05c5c' if macdh>0 else '#4caf82'
         
@@ -377,5 +386,4 @@ with st.spinner(f'📡 讀取 {market_name} 戰情室數據中...'):
         st.markdown(ai_html, unsafe_allow_html=True)
 
     except Exception as e:
-        st.error(f"系統執行錯誤：{e}")
         st.error(f"系統執行錯誤：{e}")
