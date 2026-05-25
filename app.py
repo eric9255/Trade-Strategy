@@ -73,6 +73,22 @@ def get_stock_name(ticker):
 @st.cache_data(ttl=1800)
 def fetch_market_data(main_ticker, tickers_str):
     df = yf.Ticker(main_ticker).history(period="6mo")
+    
+    # 🌟 【金額升級】強制覆蓋台股大盤的假股數，換成真實成交金額 (億元)
+    if main_ticker == "^TWII":
+        try:
+            start_d = (pd.Timestamp.now() - pd.Timedelta(days=200)).strftime("%Y-%m-%d")
+            url = f"https://api.finmindtrade.com/api/v4/data?dataset=TaiwanStockPrice&data_id=TAIEX&start_date={start_d}"
+            res = requests.get(url, headers={'User-Agent': 'Mozilla/5.0'}, timeout=5).json()
+            if res.get('msg') == 'success' and len(res.get('data', [])) > 0:
+                fm_df = pd.DataFrame(res['data'])
+                vol_map = dict(zip(fm_df['date'], fm_df['Trading_money'] / 100000000)) # 換算為億元
+                for i in range(len(df)):
+                    d_str = df.index[i].strftime('%Y-%m-%d')
+                    if d_str in vol_map:
+                        df.iloc[i, df.columns.get_loc('Volume')] = vol_map[d_str]
+        except: pass
+
     df.ta.sma(length=5, append=True)
     df.ta.sma(length=10, append=True)
     df.ta.sma(length=20, append=True)
@@ -93,47 +109,63 @@ def fetch_market_data(main_ticker, tickers_str):
             stk.ta.sma(length=5, append=True)
             stk.ta.sma(length=20, append=True)
             sc, sm5, sm20 = stk['Close'].iloc[-1], stk['SMA_5'].iloc[-1], stk['SMA_20'].iloc[-1]
+            svol = stk['Volume'].iloc[-1]
+            
+            # 計算個股真實成交金額
+            turnover = sc * svol
+            if ".TW" in t.upper() or ".TWO" in t.upper():
+                turnover_str = f"{turnover / 100000000:,.1f} 億"
+            else:
+                turnover_str = f"{turnover / 1000000:,.1f} M"
+
             stock_name = get_stock_name(t)
             display_ticker = f"{t.upper()} {stock_name}" if stock_name else t.upper()
-            p_data.append({"ticker": display_ticker, "c": sc, "m5": sm5, "m20": sm20})
+            
+            p_data.append({"ticker": display_ticker, "c": sc, "m5": sm5, "m20": sm20, "turnover": turnover_str})
             p_info += f"- {display_ticker}: 收盤 {sc:.2f}, 5MA {sm5:.2f}, 20MA {sm20:.2f}。\n"
     return df, df_wk, p_data, p_info
 
-# 🌟 【核心升級】直連台灣證券交易所官方 OpenAPI
+# 🌟 【穩定度升級】三段式防護，保證法人籌碼絕對不會消失！
 @st.cache_data(ttl=3600)
 def fetch_taiwan_chips():
+    headers = {'User-Agent': 'Mozilla/5.0'}
+    # 嘗試 1：政府官方 API
     try:
-        # 完全免費、無流量限制的政府 API，抓取最新一日的三大法人買賣超
-        url = "https://openapi.twse.com.tw/v1/fund/BFI82U"
-        res = requests.get(url, timeout=5).json()
-        
-        chips = {"date": "", "f": 0, "t": 0, "d": 0}
-        for row in res:
-            # 取得日期 (民國年)
-            chips["date"] = row.get("Day_Date", "")
-            name = row.get("TYPEK", "")
-            
-            # 取得買賣差額 (字串去逗號，換算成億元)
-            diff_str = str(row.get("Buy_Sell_Difference", "0")).replace(',', '')
-            net_val = float(diff_str) / 100000000 
-            
-            if '外資' in name:
-                chips['f'] += net_val
-            elif '投信' in name:
-                chips['t'] += net_val
-            elif '自營商' in name:
-                chips['d'] += net_val
-                
-        # 將民國年轉為西元年格式 (例: 1130506 -> 2024-05-06)
-        if chips["date"]:
-            y = int(chips["date"][:-4]) + 1911
-            m = chips["date"][-4:-2]
-            d = chips["date"][-2:]
-            chips["date"] = f"{y}-{m}-{d}"
-            
-        return chips
-    except Exception as e:
-        return None
+        res = requests.get("https://openapi.twse.com.tw/v1/fund/BFI82U", headers=headers, timeout=5).json()
+        if len(res) > 0:
+            chips = {"date": "", "f": 0, "t": 0, "d": 0}
+            for row in res:
+                chips["date"] = row.get("Day_Date", "")
+                name = row.get("TYPEK", "")
+                net_val = float(str(row.get("Buy_Sell_Difference", "0")).replace(',', '')) / 100000000 
+                if '外資' in name: chips['f'] += net_val
+                elif '投信' in name: chips['t'] += net_val
+                elif '自營商' in name: chips['d'] += net_val
+            if chips["date"]:
+                chips["date"] = f"{int(chips['date'][:-4]) + 1911}-{chips['date'][-4:-2]}-{chips['date'][-2:]}"
+            return chips
+    except: pass
+    
+    # 嘗試 2：FinMind 備用資料庫
+    try:
+        start = (pd.Timestamp.now() - pd.Timedelta(days=10)).strftime("%Y-%m-%d")
+        url = f"https://api.finmindtrade.com/api/v4/data?dataset=TaiwanStockTotalInstitutionalInvestors&start_date={start}"
+        res = requests.get(url, headers=headers, timeout=5).json()
+        if res['msg'] == 'success' and len(res['data']) > 0:
+            df = pd.DataFrame(res['data'])
+            df['net'] = (df['buy'] - df['sell']) / 100000000
+            ld = df['date'].max()
+            cdf = df[df['date'] == ld]
+            chips = {"date": ld, "f": 0, "t": 0, "d": 0}
+            for _, r in cdf.iterrows():
+                if '外資' in r['name']: chips['f'] += r['net']
+                elif '投信' in r['name']: chips['t'] += r['net']
+                elif '自營商' in r['name']: chips['d'] += r['net']
+            return chips
+    except: pass
+    
+    # 嘗試 3：如果全世界都當機了，給預設值防呆，絕對不讓排版消失
+    return {"date": "連線維護中", "f": 0, "t": 0, "d": 0}
 
 @st.cache_data(ttl=3600)
 def get_ai_report(market_name, c, m5, m20, rsi, p_info):
@@ -148,8 +180,7 @@ def get_ai_report(market_name, c, m5, m20, rsi, p_info):
         {p_info}
 
         請提供深度分析報告。你**必須完全使用以下 HTML 結構與 Class 排版**。
-        ⚠️ 嚴格規定 1：請直接輸出純 HTML，絕對不要包含 ```html 標記，也絕對不要在每一行開頭加上空白縮排！
-        ⚠️ 嚴格規定 2：針對個股分析時，請【完全照抄】我提供給你的「代號與股票名稱」，絕對不准自行猜測、翻譯或捏造股票名稱！
+        ⚠️ 絕對不要包含 ```html 標記，絕對不要在每一行開頭加上空白縮排！
 
 <div class="theory-block">
 <div class="theory-block-title">▸ 【{market_name}】解析 (波浪與纏論視角)</div>
@@ -169,7 +200,7 @@ def get_ai_report(market_name, c, m5, m20, rsi, p_info):
 <div class="theory-block-title">▸ 💼 全球專屬持股診斷</div>
 <div class="theory-text">
 <ul>
-(請針對每一檔股票輸出一個 <li> 標籤，並將股票名稱用 <strong>【】</strong> 包起來)
+(針對每一檔股票輸出一個 <li> 標籤，並將股票名稱用 <strong>【】</strong> 包起來)
 </ul>
 </div>
 </div>
@@ -226,9 +257,9 @@ with st.spinner(f'📡 讀取 {market_name} 戰情室數據中...'):
         ma_status = "多頭排列" if m5 > m20 > m60 else "空頭排列" if m5 < m20 < m60 else "震盪糾結"
         price_pos = "貼近上軌 (過熱)" if c > bbu * 0.98 else "貼近下軌 (超賣)" if c < bbl * 1.02 else "中軌震盪"
         
-        # 修正：提醒 Yahoo 對台股大盤成交量的不準確性
-        vol_note = "(註: 台股大盤量為股數)" if market_name == "台股加權指數" else ""
-        vol_status = f"量增上漲 {vol_note}" if vol > prev['Volume'] and change > 0 else f"量縮震盪 {vol_note}"
+        # 動態顯示真實成交金額單位
+        vol_display = f"{vol:,.0f} 億" if market_name == "台股加權指數" else f"{vol/1000000:,.0f} M"
+        vol_status = "量增上漲" if vol > prev['Volume'] and change > 0 else "量縮震盪"
         
         bb_status = "開口擴大" if (bbu - bbl) > (prev[bbu_col] - prev[bbl_col]) else "通道收斂"
         macd_status = "多頭延續" if macdh > 0 and macdh > prev[macdh_col] else "多頭降溫" if macdh > 0 else "空頭延續"
@@ -286,7 +317,7 @@ with st.spinner(f'📡 讀取 {market_name} 戰情室數據中...'):
 <div class="panel-item"><span class="panel-key">趨勢方向</span><span class="panel-val" style="color:{'#e05c5c' if c>m20 else '#4caf82'}">{'⬆' if c>m20 else '⬇'} {trend_dir}</span></div>
 <div class="panel-item"><span class="panel-key">價格位置</span><span class="panel-val" style="color:#e8a24a">➡ {price_pos}</span></div>
 <div class="panel-item"><span class="panel-key">均線排列</span><span class="panel-val">➡ {ma_status}</span></div>
-<div class="panel-item"><span class="panel-key">量價關係</span><span class="panel-val">➡ {vol_status}</span></div>
+<div class="panel-item"><span class="panel-key">成交金額</span><span class="panel-val">{'⬆' if vol>prev['Volume'] else '⬇'} {vol_display}</span></div>
 <div class="panel-item"><span class="panel-key">布林通道</span><span class="panel-val">➡ {bb_status}</span></div>
 </div>
 """
@@ -294,16 +325,15 @@ with st.spinner(f'📡 讀取 {market_name} 戰情室數據中...'):
 
             if market_name == "台股加權指數":
                 chips = fetch_taiwan_chips()
-                if chips:
-                    chip_html = f"""
+                chip_html = f"""
 <div class="panel-box">
 <div class="panel-title">三大法人籌碼 (億元) <span style="font-size:10px;font-weight:normal;color:#7a8090;">{chips['date']}</span></div>
-<div class="panel-item"><span class="panel-key">外資</span><span class="panel-val" style="color:{'#e05c5c' if chips['f']>0 else '#4caf82'}">{chips['f']:+.0f}</span></div>
-<div class="panel-item"><span class="panel-key">投信</span><span class="panel-val" style="color:{'#e05c5c' if chips['t']>0 else '#4caf82'}">{chips['t']:+.0f}</span></div>
-<div class="panel-item"><span class="panel-key">自營商</span><span class="panel-val" style="color:{'#e05c5c' if chips['d']>0 else '#4caf82'}">{chips['d']:+.0f}</span></div>
+<div class="panel-item"><span class="panel-key">外資</span><span class="panel-val" style="color:{'#e05c5c' if chips['f']>0 else '#4caf82' if chips['f']<0 else '#fff'}">{chips['f']:+.0f}</span></div>
+<div class="panel-item"><span class="panel-key">投信</span><span class="panel-val" style="color:{'#e05c5c' if chips['t']>0 else '#4caf82' if chips['t']<0 else '#fff'}">{chips['t']:+.0f}</span></div>
+<div class="panel-item"><span class="panel-key">自營商</span><span class="panel-val" style="color:{'#e05c5c' if chips['d']>0 else '#4caf82' if chips['d']<0 else '#fff'}">{chips['d']:+.0f}</span></div>
 </div>
 """
-                    st.markdown(chip_html, unsafe_allow_html=True)
+                st.markdown(chip_html, unsafe_allow_html=True)
             else:
                 wk_trend = "多頭延續" if df_wk['Close'].iloc[-1] > df_wk['SMA_20'].iloc[-1] else "空頭回落"
                 wk_html = f"""
@@ -359,7 +389,7 @@ with st.spinner(f'📡 讀取 {market_name} 戰情室數據中...'):
 <div class="panel-item"><span class="panel-key">MACD</span><span class="panel-val" style="color:{color_macd}">{'⬆' if macdh>0 else '⬇'} {macd_status}</span></div>
 <div class="panel-item"><span class="panel-key">均線排列</span><span class="panel-val">{'⬆' if m5>m20 else '⬇'} {'偏多' if m5>m20 else '偏空'}</span></div>
 <div class="panel-item"><span class="panel-key">布林通道</span><span class="panel-val">➡ {bb_status.split(' ')[0]}</span></div>
-<div class="panel-item"><span class="panel-key">成交量</span><span class="panel-val" title="註: Yahoo對台股大盤量僅提供股數">{'⬆' if vol>prev['Volume'] else '⬇'} {vol_status.split(' ')[0]}</span></div>
+<div class="panel-item"><span class="panel-key">量價狀態</span><span class="panel-val">{'⬆' if vol>prev['Volume'] else '⬇'} {vol_status.split(' ')[0]}</span></div>
 </div>
 
 <div class="panel-box">
@@ -389,8 +419,9 @@ with st.spinner(f'📡 讀取 {market_name} 戰情室數據中...'):
                 st.markdown(f"""
 <div style="background:#111318; border:1px solid #1e2433; padding:15px; border-radius:4px; border-left:3px solid {'#e05c5c' if p['c']>p['m20'] else '#4caf82'};">
 <div style="color:#c9a84c; font-family:'JetBrains Mono'; font-size:16px; font-weight:bold; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;" title="{p['ticker']}">{p['ticker']}</div>
-<div style="font-family:'JetBrains Mono'; font-size:24px; color:#fff; margin:10px 0;">{p['c']:,.2f}</div>
-<div style="font-size:12px; color:#7a8090;">5日線: {p['m5']:,.2f} | 月線: {p['m20']:,.2f}</div>
+<div style="font-family:'JetBrains Mono'; font-size:24px; color:#fff; margin:5px 0;">{p['c']:,.2f}</div>
+<div style="font-size:12px; color:#7a8090;">成交金額: <span style="color:#c9a84c;">{p['turnover']}</span></div>
+<div style="font-size:12px; color:#7a8090;">5MA: {p['m5']:,.2f} | 20MA: {p['m20']:,.2f}</div>
 </div>
                 """, unsafe_allow_html=True)
 
