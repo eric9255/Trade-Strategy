@@ -7,9 +7,10 @@ from datetime import datetime
 import google.generativeai as genai
 import pandas as pd
 import requests
+import pytz
 
 # ==========================================
-# 1. 網頁基本設定 & 注入戰情室專屬 CSS
+# 1. 網頁基本設定 & 戰情室專屬 CSS
 # ==========================================
 st.set_page_config(page_title="全球 AI 量化戰情室", layout="wide")
 
@@ -40,7 +41,7 @@ header {visibility: hidden;}
 .theory-text { font-size: 15px; color: #e8e4dc; line-height: 1.8; }
 .theory-text strong { color: var(--amber); }
 
-/* 四宮格強制對齊 */
+/* 四宮格強制對齊網格 */
 .four-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 15px; margin-bottom: 20px; align-items: stretch; }
 .four-grid .panel-box { margin-bottom: 0; display: flex; flex-direction: column; }
 @media (max-width: 1024px) { .four-grid { grid-template-columns: repeat(2, 1fr); } }
@@ -50,20 +51,21 @@ header {visibility: hidden;}
 st.markdown(custom_css, unsafe_allow_html=True)
 
 # ==========================================
-# 2. 側邊欄 
+# 2. 側邊欄設定區
 # ==========================================
 st.sidebar.markdown("<h3 style='color:#c9a84c;'>🌍 全球投資組合設定</h3>", unsafe_allow_html=True)
-market_choice = st.sidebar.radio("📊 大盤基準",["台股加權指數 (^TWII)", "美股標普 500 (^GSPC)", "美股納斯達克 (^IXIC)"])
+market_choice = st.sidebar.radio("📊 大盤基準", ["台股加權指數 (^TWII)", "美股標普 500 (^GSPC)", "美股納斯達克 (^IXIC)"])
 st.sidebar.write("---")
 with st.sidebar.form("setting_form"):
     user_input = st.text_area("請輸入持股代號 (用逗號分隔)", "2330.TW, 2408.TW, NVDA")
     submit_btn = st.form_submit_button("🚀 更新戰情室數據")
 
 # ==========================================
-# 3. 核心函數與快取
+# 3. 核心抓取函數與快取機制
 # ==========================================
 @st.cache_data(ttl=86400)
 def get_stock_name(ticker):
+    """利用 Yahoo API 抓取真實公司名稱，防止 AI 幻覺"""
     try:
         url = f"https://query2.finance.yahoo.com/v1/finance/search?q={ticker}"
         res = requests.get(url, headers={'User-Agent': 'Mozilla/5.0'}, timeout=3).json()
@@ -72,23 +74,25 @@ def get_stock_name(ticker):
 
 @st.cache_data(ttl=1800)
 def fetch_market_data(main_ticker, tickers_str):
+    """抓取大盤、均線、技術指標與個股資料"""
     df = yf.Ticker(main_ticker).history(period="6mo")
     
-    # 🌟 【金額升級】強制覆蓋台股大盤的假股數，換成真實成交金額 (億元)
+    # 台股大盤真實成交金額替換 (解決 Yahoo 量能失真問題)
     if main_ticker == "^TWII":
         try:
-            start_d = (pd.Timestamp.now() - pd.Timedelta(days=200)).strftime("%Y-%m-%d")
+            start_d = (pd.Timestamp.now(tz=pytz.timezone('Asia/Taipei')) - pd.Timedelta(days=200)).strftime("%Y-%m-%d")
             url = f"https://api.finmindtrade.com/api/v4/data?dataset=TaiwanStockPrice&data_id=TAIEX&start_date={start_d}"
             res = requests.get(url, headers={'User-Agent': 'Mozilla/5.0'}, timeout=5).json()
             if res.get('msg') == 'success' and len(res.get('data', [])) > 0:
                 fm_df = pd.DataFrame(res['data'])
-                vol_map = dict(zip(fm_df['date'], fm_df['Trading_money'] / 100000000)) # 換算為億元
+                vol_map = dict(zip(fm_df['date'], fm_df['Trading_money'] / 100000000))
                 for i in range(len(df)):
                     d_str = df.index[i].strftime('%Y-%m-%d')
                     if d_str in vol_map:
                         df.iloc[i, df.columns.get_loc('Volume')] = vol_map[d_str]
         except: pass
 
+    # 統一計算技術指標
     df.ta.sma(length=5, append=True)
     df.ta.sma(length=10, append=True)
     df.ta.sma(length=20, append=True)
@@ -98,39 +102,33 @@ def fetch_market_data(main_ticker, tickers_str):
     df.ta.macd(append=True)
     df.ta.stoch(append=True)
     
+    # 抓取週線資料供多週期判斷
     df_wk = yf.Ticker(main_ticker).history(period="2y", interval="1wk")
     df_wk.ta.sma(length=20, append=True)
     
-    tickers =[t.strip() for t in tickers_str.split(",") if t.strip()]
-    p_data, p_info =[], ""
+    # 抓取個股組合
+    tickers = [t.strip() for t in tickers_str.split(",") if t.strip()]
+    p_data, p_info = [], ""
     for t in tickers:
-        stk = yf.Ticker(t).history(period="3mo")
+        stk = yf.Ticker(t).history(period="3mo") # 確保天數足以計算月線
         if not stk.empty and len(stk) >= 20:
             stk.ta.sma(length=5, append=True)
             stk.ta.sma(length=20, append=True)
             sc, sm5, sm20 = stk['Close'].iloc[-1], stk['SMA_5'].iloc[-1], stk['SMA_20'].iloc[-1]
-            svol = stk['Volume'].iloc[-1]
             
-            # 計算個股真實成交金額
-            turnover = sc * svol
-            if ".TW" in t.upper() or ".TWO" in t.upper():
-                turnover_str = f"{turnover / 100000000:,.1f} 億"
-            else:
-                turnover_str = f"{turnover / 1000000:,.1f} M"
-
             stock_name = get_stock_name(t)
             display_ticker = f"{t.upper()} {stock_name}" if stock_name else t.upper()
             
-            p_data.append({"ticker": display_ticker, "c": sc, "m5": sm5, "m20": sm20, "turnover": turnover_str})
+            p_data.append({"ticker": display_ticker, "c": sc, "m5": sm5, "m20": sm20})
             p_info += f"- {display_ticker}: 收盤 {sc:.2f}, 5MA {sm5:.2f}, 20MA {sm20:.2f}。\n"
+            
     return df, df_wk, p_data, p_info
 
-# 🌟 【穩定度升級】三段式防護，保證法人籌碼絕對不會消失！
 @st.cache_data(ttl=3600)
 def fetch_taiwan_chips():
+    """抓取台灣三大法人買賣超 (雙重 API 備援)"""
     headers = {'User-Agent': 'Mozilla/5.0'}
-    # 嘗試 1：政府官方 API
-    try:
+    try: # 1. 官方 API
         res = requests.get("https://openapi.twse.com.tw/v1/fund/BFI82U", headers=headers, timeout=5).json()
         if len(res) > 0:
             chips = {"date": "", "f": 0, "t": 0, "d": 0}
@@ -146,9 +144,8 @@ def fetch_taiwan_chips():
             return chips
     except: pass
     
-    # 嘗試 2：FinMind 備用資料庫
-    try:
-        start = (pd.Timestamp.now() - pd.Timedelta(days=10)).strftime("%Y-%m-%d")
+    try: # 2. FinMind 備援
+        start = (pd.Timestamp.now(tz=pytz.timezone('Asia/Taipei')) - pd.Timedelta(days=7)).strftime("%Y-%m-%d")
         url = f"https://api.finmindtrade.com/api/v4/data?dataset=TaiwanStockTotalInstitutionalInvestors&start_date={start}"
         res = requests.get(url, headers=headers, timeout=5).json()
         if res['msg'] == 'success' and len(res['data']) > 0:
@@ -163,12 +160,11 @@ def fetch_taiwan_chips():
                 elif '自營商' in r['name']: chips['d'] += r['net']
             return chips
     except: pass
-    
-    # 嘗試 3：如果全世界都當機了，給預設值防呆，絕對不讓排版消失
-    return {"date": "連線維護中", "f": 0, "t": 0, "d": 0}
+    return {"date": "盤中/連線異常", "f": 0, "t": 0, "d": 0}
 
 @st.cache_data(ttl=3600)
 def get_ai_report(market_name, c, m5, m20, rsi, p_info):
+    """呼叫 Gemini 生成深度分析，具備 HTML 強制防護"""
     api_key = st.secrets.get("GEMINI_API_KEY") 
     if not api_key: return "<p style='color:#e8a24a;'>⚠️ 系統尚未設定 GEMINI_API_KEY。</p>"
     try:
@@ -180,19 +176,22 @@ def get_ai_report(market_name, c, m5, m20, rsi, p_info):
         {p_info}
 
         請提供深度分析報告。你**必須完全使用以下 HTML 結構與 Class 排版**。
-        ⚠️ 絕對不要包含 ```html 標記，絕對不要在每一行開頭加上空白縮排！
+        ⚠️ 嚴格規定：
+        1. 絕對不要包含 ```html 標記！
+        2. 絕對不要在每一行開頭加上任何空白縮排！
+        3. 針對個股分析，請完全照抄我提供的「代號與名稱」，嚴禁自行捏造！
 
 <div class="theory-block">
 <div class="theory-block-title">▸ 【{market_name}】解析 (波浪與纏論視角)</div>
 <div class="theory-text">
-(你的大盤分析內容，重點文字請使用 <strong> 標籤包裝)
+(大盤分析內容，重點文字請使用 <strong> 標籤包裝)
 </div>
 </div>
 
 <div class="theory-block">
 <div class="theory-block-title">▸ 明早走勢推演與實戰策略</div>
 <div class="theory-text">
-(你的策略推演，若有看空/危險的文字請加上 <span style="color:#e05c5c">，看多請加上 <span style="color:#4caf82">)
+(策略推演，若有看空/危險的文字請加上 <span style="color:#e05c5c">，看多請加上 <span style="color:#4caf82">)
 </div>
 </div>
 
@@ -200,7 +199,7 @@ def get_ai_report(market_name, c, m5, m20, rsi, p_info):
 <div class="theory-block-title">▸ 💼 全球專屬持股診斷</div>
 <div class="theory-text">
 <ul>
-(針對每一檔股票輸出一個 <li> 標籤，並將股票名稱用 <strong>【】</strong> 包起來)
+(針對每一檔股票輸出一個 <li>，並將股票名稱用 <strong>【】</strong> 包起來)
 </ul>
 </div>
 </div>
@@ -213,13 +212,14 @@ def get_ai_report(market_name, c, m5, m20, rsi, p_info):
         model = genai.GenerativeModel(target_model)
         response = model.generate_content(prompt)
         raw_text = response.text.replace("```html", "").replace("```", "")
+        # 強制移除開頭空格，防禦 Markdown 程式碼框
         clean_text = "\n".join([line.strip() for line in raw_text.split('\n')])
         return clean_text
     except Exception as e:
         return f"<p style='color:#e05c5c;'>🤖 API 錯誤：{e}</p>"
 
 # ==========================================
-# 4. 戰情室版面渲染
+# 4. 戰情室大腦：數據演算與版面渲染
 # ==========================================
 if "台股加權指數" in market_choice:
     main_ticker, market_name = "^TWII", "台股加權指數"
@@ -230,78 +230,91 @@ else:
 
 with st.spinner(f'📡 讀取 {market_name} 戰情室數據中...'):
     try:
+        # 取得資料
         df, df_wk, port_data, port_info = fetch_market_data(main_ticker, user_input)
         
-        bbu_col =[c for c in df.columns if c.startswith('BBU')][0]
-        bbm_col =[c for c in df.columns if c.startswith('BBM')][0]
-        bbl_col =[c for c in df.columns if c.startswith('BBL')][0]
-        macd_col =[c for c in df.columns if c.startswith('MACD_')][0]
-        macdh_col =[c for c in df.columns if c.startswith('MACDh_')][0]
-        macds_col =[c for c in df.columns if c.startswith('MACDs_')][0]
-        k_col =[c for c in df.columns if c.startswith('STOCHk')][0]
-        d_col =[c for c in df.columns if c.startswith('STOCHd')][0]
+        # 動態抓取欄位名稱防當機
+        bbu_col = [c for c in df.columns if c.startswith('BBU')][0]
+        bbm_col = [c for c in df.columns if c.startswith('BBM')][0]
+        bbl_col = [c for c in df.columns if c.startswith('BBL')][0]
+        macd_col = [c for c in df.columns if c.startswith('MACD_')][0]
+        macdh_col = [c for c in df.columns if c.startswith('MACDh_')][0]
+        macds_col = [c for c in df.columns if c.startswith('MACDs_')][0]
+        k_col = [c for c in df.columns if c.startswith('STOCHk')][0]
+        d_col = [c for c in df.columns if c.startswith('STOCHd')][0]
 
-        latest = df.iloc[-1]
-        prev = df.iloc[-2]
+        latest, prev = df.iloc[-1], df.iloc[-2]
         
+        # 變數賦值
         c, o, h, l, vol = latest['Close'], latest['Open'], latest['High'], latest['Low'], latest['Volume']
         m5, m10, m20, m60 = latest['SMA_5'], latest['SMA_10'], latest['SMA_20'], latest['SMA_60']
         bbu, bbm, bbl = latest[bbu_col], latest[bbm_col], latest[bbl_col]
         rsi, k, d, macdh = latest['RSI_14'], latest[k_col], latest[d_col], latest[macdh_col]
         
+        # 基本計算
         change = c - prev['Close']
         change_pct = (change / prev['Close']) * 100
         color_main = '#e05c5c' if change >= 0 else '#4caf82' 
         
+        # 量化型態邏輯判斷
         trend_dir = "多頭趨勢" if c > m20 else "空頭趨勢"
         ma_status = "多頭排列" if m5 > m20 > m60 else "空頭排列" if m5 < m20 < m60 else "震盪糾結"
         price_pos = "貼近上軌 (過熱)" if c > bbu * 0.98 else "貼近下軌 (超賣)" if c < bbl * 1.02 else "中軌震盪"
-        
-        # 動態顯示真實成交金額單位
-        vol_display = f"{vol:,.0f} 億" if market_name == "台股加權指數" else f"{vol/1000000:,.0f} M"
-        vol_status = "量增上漲" if vol > prev['Volume'] and change > 0 else "量縮震盪"
-        
         bb_status = "開口擴大" if (bbu - bbl) > (prev[bbu_col] - prev[bbl_col]) else "通道收斂"
         macd_status = "多頭延續" if macdh > 0 and macdh > prev[macdh_col] else "多頭降溫" if macdh > 0 else "空頭延續"
         
+        # 【優化重點】盤中未結算防呆邏輯
+        if market_name == "台股加權指數" and vol < 100:
+            vol_display = "盤中結算中 ⏳"
+            vol_status = "盤中未結算 ⏳"
+        else:
+            vol_display = f"{vol:,.0f} 億" if market_name == "台股加權指數" else f"{vol/1000000:,.0f} M"
+            vol_status = "量增上漲" if vol > prev['Volume'] and change > 0 else ("量增下跌" if vol > prev['Volume'] and change < 0 else "量縮震盪")
+        
+        # 簡易勝率模型
         down_prob = min(max(int((rsi - 50) * 1.5 + ((c - m20)/m20*100 * 5)), 10), 85)
         up_prob = max(100 - down_prob - 15, 5)
         flat_prob = 100 - up_prob - down_prob
 
-        # --- 頂部 Header ---
+        # --- 渲染：頂部 Header ---
         header_html = f"""
-<div class="custom-header" style="display:flex; justify-content:space-between; align-items:flex-end;">
-<div>
-<h1>{market_name} <span style="font-family:'JetBrains Mono'; font-size:32px; color:{color_main};">{c:,.2f}</span></h1>
-<div style="font-family:'JetBrains Mono'; font-size:14px; color:{color_main};">{'▲' if change>=0 else '▼'} {change:+.2f} ({change_pct:+.2f}%)</div>
-</div>
-<div>
-<span class="bb-text">布林上軌 <span style="color:#e05c5c">{bbu:,.0f}</span></span>
-<span class="bb-text">中軌 <span style="color:#e8a24a">{bbm:,.0f}</span></span>
-<span class="bb-text">下軌 <span style="color:#4caf82">{bbl:,.0f}</span></span>
-</div>
-</div>
-"""
+        <div class="custom-header" style="display:flex; justify-content:space-between; align-items:flex-end;">
+            <div>
+                <h1>{market_name} <span style="font-family:'JetBrains Mono'; font-size:32px; color:{color_main};">{c:,.2f}</span></h1>
+                <div style="font-family:'JetBrains Mono'; font-size:14px; color:{color_main};">{'▲' if change>=0 else '▼'} {change:+.2f} ({change_pct:+.2f}%)</div>
+            </div>
+            <div>
+                <span class="bb-text">布林上軌 <span style="color:#e05c5c">{bbu:,.0f}</span></span>
+                <span class="bb-text">中軌 <span style="color:#e8a24a">{bbm:,.0f}</span></span>
+                <span class="bb-text">下軌 <span style="color:#4caf82">{bbl:,.0f}</span></span>
+            </div>
+        </div>
+        """
         st.markdown(header_html, unsafe_allow_html=True)
 
-        # --- 第一層：主圖與技術總覽 ---
+        # --- 渲染：第一層 (主圖與技術總覽) ---
         col_main, col_side = st.columns([7, 3])
 
         with col_main:
             fig = make_subplots(rows=4, cols=1, shared_xaxes=True, vertical_spacing=0.02, row_heights=[0.5, 0.15, 0.15, 0.2])
+            # K線與均線通道
             fig.add_trace(go.Candlestick(x=df.index, open=df['Open'], high=df['High'], low=df['Low'], close=df['Close'], increasing_line_color='#e05c5c', decreasing_line_color='#4caf82', name='K線'), row=1, col=1)
             fig.add_trace(go.Scatter(x=df.index, y=df['SMA_5'], mode='lines', name='5MA', line=dict(color='#e8a24a', width=1)), row=1, col=1)
             fig.add_trace(go.Scatter(x=df.index, y=df['SMA_20'], mode='lines', name='20MA', line=dict(color='#c9a84c', width=1)), row=1, col=1)
             fig.add_trace(go.Scatter(x=df.index, y=df['SMA_60'], mode='lines', name='60MA', line=dict(color='#4a8fe8', width=1)), row=1, col=1)
             fig.add_trace(go.Scatter(x=df.index, y=df[bbu_col], mode='lines', line=dict(color='rgba(255,255,255,0.2)', width=1, dash='dot'), name='上軌'), row=1, col=1)
             fig.add_trace(go.Scatter(x=df.index, y=df[bbl_col], mode='lines', line=dict(color='rgba(255,255,255,0.2)', width=1, dash='dot'), name='下軌', fill='tonexty', fillcolor='rgba(255,255,255,0.02)'), row=1, col=1)
-            colors =['#e05c5c' if row['Close'] >= row['Open'] else '#4caf82' for index, row in df.iterrows()]
-            fig.add_trace(go.Bar(x=df.index, y=df['Volume'], marker_color=colors, name='成交量'), row=2, col=1)
+            # 成交量
+            v_colors = ['#e05c5c' if row['Close'] >= row['Open'] else '#4caf82' for index, row in df.iterrows()]
+            fig.add_trace(go.Bar(x=df.index, y=df['Volume'], marker_color=v_colors, name='成交量'), row=2, col=1)
+            # KD
             fig.add_trace(go.Scatter(x=df.index, y=df[k_col], mode='lines', name='K', line=dict(color='#e05c5c', width=1.5)), row=3, col=1)
             fig.add_trace(go.Scatter(x=df.index, y=df[d_col], mode='lines', name='D', line=dict(color='#4a8fe8', width=1.5)), row=3, col=1)
             fig.add_hline(y=80, line_dash="dot", line_color="rgba(255,255,255,0.2)", row=3, col=1)
+            # MACD
             fig.add_trace(go.Scatter(x=df.index, y=df[macd_col], mode='lines', name='DIF', line=dict(color='#e05c5c', width=1.5)), row=4, col=1)
-            macd_colors =['#e05c5c' if val >= 0 else '#4caf82' for val in df[macdh_col]]
+            fig.add_trace(go.Scatter(x=df.index, y=df[macds_col], mode='lines', name='MACD', line=dict(color='#4a8fe8', width=1.5)), row=4, col=1)
+            macd_colors = ['#e05c5c' if val >= 0 else '#4caf82' for val in df[macdh_col]]
             fig.add_trace(go.Bar(x=df.index, y=df[macdh_col], marker_color=macd_colors, name='OSC'), row=4, col=1)
 
             fig.update_layout(paper_bgcolor='#0a0c10', plot_bgcolor='#111318', font=dict(color='#7a8090', family='JetBrains Mono'), margin=dict(l=5, r=5, t=5, b=5), height=550, showlegend=False, xaxis=dict(rangeslider=dict(visible=False)), xaxis4=dict(showgrid=True, gridcolor='#1e2433'))
@@ -311,118 +324,119 @@ with st.spinner(f'📡 讀取 {market_name} 戰情室數據中...'):
             st.plotly_chart(fig, use_container_width=True)
 
         with col_side:
-            tech_html = f"""
-<div class="panel-box">
-<div class="panel-title">技術分析總覽</div>
-<div class="panel-item"><span class="panel-key">趨勢方向</span><span class="panel-val" style="color:{'#e05c5c' if c>m20 else '#4caf82'}">{'⬆' if c>m20 else '⬇'} {trend_dir}</span></div>
-<div class="panel-item"><span class="panel-key">價格位置</span><span class="panel-val" style="color:#e8a24a">➡ {price_pos}</span></div>
-<div class="panel-item"><span class="panel-key">均線排列</span><span class="panel-val">➡ {ma_status}</span></div>
-<div class="panel-item"><span class="panel-key">成交金額</span><span class="panel-val">{'⬆' if vol>prev['Volume'] else '⬇'} {vol_display}</span></div>
-<div class="panel-item"><span class="panel-key">布林通道</span><span class="panel-val">➡ {bb_status}</span></div>
-</div>
-"""
-            st.markdown(tech_html, unsafe_allow_html=True)
+            st.markdown(f"""
+            <div class="panel-box">
+            <div class="panel-title">技術分析總覽</div>
+            <div class="panel-item"><span class="panel-key">趨勢方向</span><span class="panel-val" style="color:{'#e05c5c' if c>m20 else '#4caf82'}">{'⬆' if c>m20 else '⬇'} {trend_dir}</span></div>
+            <div class="panel-item"><span class="panel-key">價格位置</span><span class="panel-val" style="color:#e8a24a">➡ {price_pos}</span></div>
+            <div class="panel-item"><span class="panel-key">均線排列</span><span class="panel-val">➡ {ma_status}</span></div>
+            <div class="panel-item"><span class="panel-key">成交金額</span><span class="panel-val" style="color:{'#e8a24a' if '⏳' in vol_display else '#fff'}">{vol_display}</span></div>
+            <div class="panel-item"><span class="panel-key">布林通道</span><span class="panel-val">➡ {bb_status}</span></div>
+            </div>
+            """, unsafe_allow_html=True)
 
             if market_name == "台股加權指數":
                 chips = fetch_taiwan_chips()
-                chip_html = f"""
-<div class="panel-box">
-<div class="panel-title">三大法人籌碼 (億元) <span style="font-size:10px;font-weight:normal;color:#7a8090;">{chips['date']}</span></div>
-<div class="panel-item"><span class="panel-key">外資</span><span class="panel-val" style="color:{'#e05c5c' if chips['f']>0 else '#4caf82' if chips['f']<0 else '#fff'}">{chips['f']:+.0f}</span></div>
-<div class="panel-item"><span class="panel-key">投信</span><span class="panel-val" style="color:{'#e05c5c' if chips['t']>0 else '#4caf82' if chips['t']<0 else '#fff'}">{chips['t']:+.0f}</span></div>
-<div class="panel-item"><span class="panel-key">自營商</span><span class="panel-val" style="color:{'#e05c5c' if chips['d']>0 else '#4caf82' if chips['d']<0 else '#fff'}">{chips['d']:+.0f}</span></div>
-</div>
-"""
-                st.markdown(chip_html, unsafe_allow_html=True)
+                if chips:
+                    # 判斷是否為盤中尚未結算
+                    is_intraday = "異常" in chips['date'] or "連線" in chips['date'] or (vol < 100)
+                    chip_date = "盤中結算中 ⏳" if is_intraday else chips['date']
+                    val_f = "等待結算" if is_intraday else f"{chips['f']:+.0f}"
+                    val_t = "等待結算" if is_intraday else f"{chips['t']:+.0f}"
+                    val_d = "等待結算" if is_intraday else f"{chips['d']:+.0f}"
+                    col_f = "#e8a24a" if is_intraday else ('#e05c5c' if chips['f']>0 else '#4caf82' if chips['f']<0 else '#fff')
+                    
+                    st.markdown(f"""
+                    <div class="panel-box">
+                    <div class="panel-title">三大法人籌碼 (億元) <span style="font-size:10px;font-weight:normal;color:#7a8090;">{chip_date}</span></div>
+                    <div class="panel-item"><span class="panel-key">外資</span><span class="panel-val" style="color:{col_f}">{val_f}</span></div>
+                    <div class="panel-item"><span class="panel-key">投信</span><span class="panel-val" style="color:{col_f}">{val_t}</span></div>
+                    <div class="panel-item"><span class="panel-key">自營商</span><span class="panel-val" style="color:{col_f}">{val_d}</span></div>
+                    </div>
+                    """, unsafe_allow_html=True)
             else:
                 wk_trend = "多頭延續" if df_wk['Close'].iloc[-1] > df_wk['SMA_20'].iloc[-1] else "空頭回落"
-                wk_html = f"""
-<div class="panel-box">
-<div class="panel-title">多週期趨勢分析</div>
-<div class="panel-item"><span class="panel-key">日K (中線)</span><span class="panel-val" style="color:{'#e05c5c' if c>m20 else '#4caf82'}">{trend_dir}</span></div>
-<div class="panel-item"><span class="panel-key">週K (長線)</span><span class="panel-val" style="color:{'#e05c5c' if '多' in wk_trend else '#4caf82'}">{wk_trend}</span></div>
-</div>
-"""
-                st.markdown(wk_html, unsafe_allow_html=True)
+                st.markdown(f"""
+                <div class="panel-box">
+                <div class="panel-title">多週期趨勢分析</div>
+                <div class="panel-item"><span class="panel-key">日K (中線)</span><span class="panel-val" style="color:{'#e05c5c' if c>m20 else '#4caf82'}">{trend_dir}</span></div>
+                <div class="panel-item"><span class="panel-key">週K (長線)</span><span class="panel-val" style="color:{'#e05c5c' if '多' in wk_trend else '#4caf82'}">{wk_trend}</span></div>
+                </div>
+                """, unsafe_allow_html=True)
 
-            levels_html = f"""
-<div class="panel-box">
-<div class="panel-title">關鍵價位防守</div>
-<div class="panel-item"><span class="panel-key" style="color:#e05c5c;">壓力區 (布林上軌)</span><span class="panel-val">{bbu:,.0f} ~ {bbu*1.01:,.0f}</span></div>
-<div class="panel-item"><span class="panel-key" style="color:#e8a24a;">回檔區 (5MA~10MA)</span><span class="panel-val">{m10:,.0f} ~ {m5:,.0f}</span></div>
-<div class="panel-item"><span class="panel-key" style="color:#4caf82;">支撐區 (月線)</span><span class="panel-val">{bbl:,.0f} ~ {m20:,.0f}</span></div>
-</div>
-"""
-            st.markdown(levels_html, unsafe_allow_html=True)
+            st.markdown(f"""
+            <div class="panel-box">
+            <div class="panel-title">關鍵價位防守</div>
+            <div class="panel-item"><span class="panel-key" style="color:#e05c5c;">壓力區 (布林上軌)</span><span class="panel-val">{bbu:,.0f} ~ {bbu*1.01:,.0f}</span></div>
+            <div class="panel-item"><span class="panel-key" style="color:#e8a24a;">回檔區 (5MA~10MA)</span><span class="panel-val">{m10:,.0f} ~ {m5:,.0f}</span></div>
+            <div class="panel-item"><span class="panel-key" style="color:#4caf82;">支撐區 (月線)</span><span class="panel-val">{bbl:,.0f} ~ {m20:,.0f}</span></div>
+            </div>
+            """, unsafe_allow_html=True)
 
-        # --- 第二層：四宮格 ---
+        # --- 渲染：第二層 (四宮格面板) ---
         color_kd = '#e05c5c' if k>d else '#4caf82'
         color_macd = '#e05c5c' if macdh>0 else '#4caf82'
         
-        four_grid_html = f"""
-<div class="four-grid">
+        st.markdown(f"""
+        <div class="four-grid">
+            <div class="panel-box">
+                <div class="panel-title">葛蘭威爾 8 大法則</div>
+                <div class="gann-grid">
+                    <div class="gann-cell" style="color:#7a8090;">買1<br>止跌</div><div class="gann-cell" style="color:#7a8090;">買2<br>回測</div><div class="gann-cell" style="color:#7a8090;">買3<br>假跌</div><div class="gann-cell" style="color:#7a8090;">買4<br>乖離</div>
+                    <div class="gann-cell" style="color:#7a8090;">賣1<br>轉跌</div><div class="gann-cell" style="color:#7a8090;">賣2<br>遇壓</div><div class="gann-cell" style="color:#e8a24a;">賣3<br>假突</div><div class="gann-cell" style="color:#e05c5c;font-weight:bold;">賣4<br>超買</div>
+                </div>
+                <div style="font-size:12px; color:#7a8090; margin-top:10px;">現狀評估：價格與均線乖離較大，若出現爆量留長上影線，需提防符合<span style="color:#e05c5c">【賣4】嚴重超買拉回</span>法則。</div>
+            </div>
 
-<div class="panel-box">
-<div class="panel-title">葛蘭威爾 8 大法則</div>
-<div class="gann-grid">
-<div class="gann-cell" style="color:#7a8090;">買1<br>止跌</div><div class="gann-cell" style="color:#7a8090;">買2<br>回測</div><div class="gann-cell" style="color:#7a8090;">買3<br>假跌</div><div class="gann-cell" style="color:#7a8090;">買4<br>乖離</div>
-<div class="gann-cell" style="color:#7a8090;">賣1<br>轉跌</div><div class="gann-cell" style="color:#7a8090;">賣2<br>遇壓</div><div class="gann-cell" style="color:#e8a24a;">賣3<br>假突</div><div class="gann-cell" style="color:#e05c5c;font-weight:bold;">賣4<br>超買</div>
-</div>
-<div style="font-size:12px; color:#7a8090; margin-top:10px;">現狀評估：價格距離月線過遠，若出現爆量留長上影線，需提防符合<span style="color:#e05c5c">【賣4】嚴重超買拉回</span>法則。</div>
-</div>
+            <div class="panel-box">
+                <div class="panel-title">型態分析 (W底 / M頭)</div>
+                <div style="font-size:13px; margin-bottom:10px;">
+                    <strong style="color:#fff;">W底分析：</strong> <span style="color:#e05c5c;">❌ 未形成標準W底</span><br>
+                    <span style="color:#7a8090; font-size:12px;">理由：無明顯打底右肩跡象。</span>
+                </div>
+                <div style="font-size:13px;">
+                    <strong style="color:#fff;">M頭分析：</strong> <span style="color:#e8a24a;">⚠️ M頭醞釀疑慮</span><br>
+                    <span style="color:#7a8090; font-size:12px;">理由：若跌破前波低點與月線 ({m20:,.0f})，則頭部成型。</span>
+                </div>
+            </div>
 
-<div class="panel-box">
-<div class="panel-title">型態分析 (W底 / M頭)</div>
-<div style="font-size:13px; margin-bottom:10px;">
-<strong style="color:#fff;">W底分析：</strong> <span style="color:#e05c5c;">❌ 未形成標準W底</span><br>
-<span style="color:#7a8090; font-size:12px;">理由：目前處於高檔震盪，無明顯打底右肩跡象。</span>
-</div>
-<div style="font-size:13px;">
-<strong style="color:#fff;">M頭分析：</strong> <span style="color:#e8a24a;">⚠️ M頭醞釀疑慮</span><br>
-<span style="color:#7a8090; font-size:12px;">理由：若跌破前波低點與月線 ({m20:,.0f})，則頭部成型。</span>
-</div>
-</div>
+            <div class="panel-box">
+                <div class="panel-title">技術指標總覽</div>
+                <div class="panel-item"><span class="panel-key">KD (9,3,3)</span><span class="panel-val" style="color:{color_kd}">{'⬆' if k>d else '⬇'} {k:.1f}/{d:.1f}</span></div>
+                <div class="panel-item"><span class="panel-key">MACD</span><span class="panel-val" style="color:{color_macd}">{'⬆' if macdh>0 else '⬇'} {macd_status}</span></div>
+                <div class="panel-item"><span class="panel-key">均線排列</span><span class="panel-val">{'⬆' if m5>m20 else '⬇'} {'偏多' if m5>m20 else '偏空'}</span></div>
+                <div class="panel-item"><span class="panel-key">布林通道</span><span class="panel-val">➡ {bb_status.split(' ')[0]}</span></div>
+                <div class="panel-item"><span class="panel-key">量價狀態</span><span class="panel-val">{'⬆' if vol>prev['Volume'] else '⬇' if vol<prev['Volume'] else '➡'} {vol_status.split(' ')[0]}</span></div>
+            </div>
 
-<div class="panel-box">
-<div class="panel-title">技術指標總覽</div>
-<div class="panel-item"><span class="panel-key">KD (9,3,3)</span><span class="panel-val" style="color:{color_kd}">{'⬆' if k>d else '⬇'} {k:.1f}/{d:.1f}</span></div>
-<div class="panel-item"><span class="panel-key">MACD</span><span class="panel-val" style="color:{color_macd}">{'⬆' if macdh>0 else '⬇'} {macd_status}</span></div>
-<div class="panel-item"><span class="panel-key">均線排列</span><span class="panel-val">{'⬆' if m5>m20 else '⬇'} {'偏多' if m5>m20 else '偏空'}</span></div>
-<div class="panel-item"><span class="panel-key">布林通道</span><span class="panel-val">➡ {bb_status.split(' ')[0]}</span></div>
-<div class="panel-item"><span class="panel-key">量價狀態</span><span class="panel-val">{'⬆' if vol>prev['Volume'] else '⬇'} {vol_status.split(' ')[0]}</span></div>
-</div>
+            <div class="panel-box">
+                <div class="panel-title">明日漲跌機率與操作建議</div>
+                <div class="prob-grid" style="margin-bottom:10px;">
+                    <div class="prob-card" style="border-top-color: #e05c5c;"><div class="prob-title">上漲</div><div class="prob-val" style="color: #e05c5c;">{up_prob}%</div></div>
+                    <div class="prob-card" style="border-top-color: #4caf82;"><div class="prob-title">下跌</div><div class="prob-val" style="color: #4caf82;">{down_prob}%</div></div>
+                    <div class="prob-card" style="border-top-color: #e8a24a;"><div class="prob-title">震盪</div><div class="prob-val" style="color: #e8a24a;">{flat_prob}%</div></div>
+                </div>
+                <ul class="bullet-list">
+                    <li><strong style="color:#e8a24a;">策略:</strong> 不追高，等待回檔佈局</li>
+                    <li><strong style="color:#4caf82;">買點:</strong> {m10:,.0f} ~ {m20:,.0f} 附近</li>
+                    <li><strong style="color:#e05c5c;">防守:</strong> 跌破 {m20:,.0f} 轉弱停損</li>
+                </ul>
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
 
-<div class="panel-box">
-<div class="panel-title">明日漲跌機率與操作建議</div>
-<div class="prob-grid" style="margin-bottom:10px;">
-<div class="prob-card" style="border-top-color: #e05c5c;"><div class="prob-title">上漲</div><div class="prob-val" style="color: #e05c5c;">{up_prob}%</div></div>
-<div class="prob-card" style="border-top-color: #4caf82;"><div class="prob-title">下跌</div><div class="prob-val" style="color: #4caf82;">{down_prob}%</div></div>
-<div class="prob-card" style="border-top-color: #e8a24a;"><div class="prob-title">震盪</div><div class="prob-val" style="color: #e8a24a;">{flat_prob}%</div></div>
-</div>
-<ul class="bullet-list">
-<li><strong style="color:#e8a24a;">策略:</strong> 不追高，等待回檔佈局</li>
-<li><strong style="color:#4caf82;">買點:</strong> {m10:,.0f} ~ {m20:,.0f} 附近</li>
-<li><strong style="color:#e05c5c;">防守:</strong> 跌破 {m20:,.0f} 轉弱停損</li>
-</ul>
-</div>
-
-</div>
-"""
-        st.markdown(four_grid_html, unsafe_allow_html=True)
-
-        # --- 第三層：持股卡片與 AI 長文分析 ---
+        # --- 渲染：第三層 (持股卡片與 AI 報告) ---
         st.write("---")
         st.markdown("<h4 style='color:#c9a84c; font-family:Noto Serif TC;'>💼 您的全球持股即時監控</h4>", unsafe_allow_html=True)
         cols = st.columns(len(port_data) if len(port_data) > 0 else 1)
         for idx, p in enumerate(port_data):
             with cols[idx]:
                 st.markdown(f"""
-<div style="background:#111318; border:1px solid #1e2433; padding:15px; border-radius:4px; border-left:3px solid {'#e05c5c' if p['c']>p['m20'] else '#4caf82'};">
-<div style="color:#c9a84c; font-family:'JetBrains Mono'; font-size:16px; font-weight:bold; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;" title="{p['ticker']}">{p['ticker']}</div>
-<div style="font-family:'JetBrains Mono'; font-size:24px; color:#fff; margin:5px 0;">{p['c']:,.2f}</div>
-<div style="font-size:12px; color:#7a8090;">成交金額: <span style="color:#c9a84c;">{p['turnover']}</span></div>
-<div style="font-size:12px; color:#7a8090;">5MA: {p['m5']:,.2f} | 20MA: {p['m20']:,.2f}</div>
-</div>
+                <div style="background:#111318; border:1px solid #1e2433; padding:15px; border-radius:4px; border-left:3px solid {'#e05c5c' if p['c']>p['m20'] else '#4caf82'};">
+                    <div style="color:#c9a84c; font-family:'JetBrains Mono'; font-size:16px; font-weight:bold; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;" title="{p['ticker']}">{p['ticker']}</div>
+                    <div style="font-family:'JetBrains Mono'; font-size:24px; color:#fff; margin:10px 0;">{p['c']:,.2f}</div>
+                    <div style="font-size:12px; color:#7a8090;">5日線: {p['m5']:,.2f} | 月線: {p['m20']:,.2f}</div>
+                </div>
                 """, unsafe_allow_html=True)
 
         st.markdown("<h4 style='color:#c9a84c; font-family:Noto Serif TC; margin-top:30px;'>🤖 戰情室專屬 AI 深度解析</h4>", unsafe_allow_html=True)
@@ -430,4 +444,4 @@ with st.spinner(f'📡 讀取 {market_name} 戰情室數據中...'):
         st.markdown(ai_html, unsafe_allow_html=True)
 
     except Exception as e:
-        st.error(f"系統執行錯誤：{e}")
+        st.error(f"系統執行錯誤，請嘗試重新整理。錯誤詳情：{e}")
